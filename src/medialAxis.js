@@ -206,6 +206,63 @@ export class MedialAxisTransform {
       }
     }
 
+    // 1b. Sample along each vertex angle bisector to trace deep interior branches (e.g. for star shapes)
+    for (let i = 0; i < this.polygon.length; i++) {
+      const vPrev = this.polygon[(i - 1 + this.polygon.length) % this.polygon.length];
+      const vCurr = this.polygon[i];
+      const vNext = this.polygon[(i + 1) % this.polygon.length];
+
+      const n1 = getInwardNormal(vPrev, vCurr);
+      const n2 = getInwardNormal(vCurr, vNext);
+      const bisectNorm = n1.add(n2).normalize();
+
+      if (bisectNorm.lengthSq() < 1e-6) continue; // Skip collinear flat vertices
+
+      // Cast ray along the vertex bisector
+      const intersectionPoint = intersectRayPolygon(vCurr, bisectNorm, this.polygon);
+      if (intersectionPoint) {
+        const bisectVec = intersectionPoint.sub(vCurr);
+        const bisectPoints = [];
+
+        // Sample points along the bisector segment
+        for (let j = 0; j < samplesPerEdge; j++) {
+          const t = (j + 1) / (samplesPerEdge + 1);
+          const samplePt = vCurr.add(bisectVec.scale(t));
+
+          // Find the closest boundary point to the bisector sample
+          const { point: basePoint } = distanceToPolygon(samplePt, this.polygon);
+          const { edgeIndex } = distanceToPolygon(basePoint, this.polygon);
+          
+          if (edgeIndex !== -1) {
+            const ev1 = this.polygon[edgeIndex];
+            const ev2 = this.polygon[(edgeIndex + 1) % this.polygon.length];
+            const inwardNorm = getInwardNormal(ev1, ev2);
+
+            const hitPoint = intersectRayPolygon(basePoint, inwardNorm, this.polygon);
+            if (hitPoint) {
+              const medialPoint = this.computeMedialPoint(basePoint, hitPoint);
+              this.computeEffectiveNormal(medialPoint, medialPoint.radius);
+              
+              bisectPoints.push(medialPoint);
+              regularPoints.push(medialPoint);
+
+              // Check for governor transitions along the bisector branch
+              if (bisectPoints.length > 1) {
+                const p1 = bisectPoints[bisectPoints.length - 2];
+                const p2 = bisectPoints[bisectPoints.length - 1];
+
+                const crossVal = p1.effectiveNormal.cross(p2.effectiveNormal);
+                if (Math.abs(crossVal) > 1e-4) {
+                  const jPoint = this.computeJunctionPoint(p1, p2);
+                  junctionPoints.push(jPoint);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     return { regularPoints, junctionPoints };
   }
 
@@ -365,6 +422,125 @@ export class MedialAxisTransform {
       }
     }
 
+    // 7. Post-Simplification: Iteratively delete intermediate valence 2 vertices to straighten paths
+    let changed = true;
+    while (changed) {
+      changed = false;
+      
+      const neighbors = new Map();
+      const addNeighbor = (n1, n2) => {
+        if (!neighbors.has(n1)) neighbors.set(n1, new Set());
+        neighbors.get(n1).add(n2);
+      };
+      
+      for (const seg of simplifiedSegments) {
+        addNeighbor(seg.start, seg.end);
+        addNeighbor(seg.end, seg.start);
+      }
+      
+      let targetNode = null;
+      for (const [node, nbSet] of neighbors.entries()) {
+        // Only delete non-end point nodes that have exactly 2 neighbors
+        if (nbSet.size === 2 && !node.isEndPoint) {
+          targetNode = node;
+          break;
+        }
+      }
+      
+      if (targetNode) {
+        const nbs = Array.from(neighbors.get(targetNode));
+        const n1 = nbs[0];
+        const n2 = nbs[1];
+        
+        // Remove segments containing targetNode
+        for (let idx = simplifiedSegments.length - 1; idx >= 0; idx--) {
+          const seg = simplifiedSegments[idx];
+          if (seg.start === targetNode || seg.end === targetNode) {
+            simplifiedSegments.splice(idx, 1);
+          }
+        }
+        
+        // Connect n1 and n2 directly
+        const exists = simplifiedSegments.some(seg => 
+          (seg.start === n1 && seg.end === n2) ||
+          (seg.start === n2 && seg.end === n1)
+        );
+        if (!exists && n1 !== n2) {
+          simplifiedSegments.push({ start: n1, end: n2 });
+        }
+        
+        // Remove targetNode from allNodes list so the visualizer doesn't draw a junction circle there
+        const nodeIdx = allNodes.indexOf(targetNode);
+        if (nodeIdx !== -1) {
+          allNodes.splice(nodeIdx, 1);
+        }
+        
+        changed = true;
+      }
+    }
+
     return { segments: simplifiedSegments, nodes: allNodes };
+  }
+
+  // Computes exact convex Voronoi cells for a list of seeds, bounded by a large box.
+  // Each cell is constructed using Sutherland-Hodgman convex polygon clipping against
+  // the perpendicular bisector half-planes of all other seeds.
+  computeVoronoiCells(seeds, width = 3000, height = 3000) {
+    const cells = [];
+    if (seeds.length === 0) return [];
+
+    // Sutherland-Hodgman polygon clipping against a half-plane
+    const clipPolygon = (poly, pointOnLine, lineNormal) => {
+      const clipped = [];
+      if (poly.length === 0) return [];
+      
+      for (let i = 0; i < poly.length; i++) {
+        const p1 = poly[i];
+        const p2 = poly[(i + 1) % poly.length];
+        
+        const d1 = p1.sub(pointOnLine).dot(lineNormal);
+        const d2 = p2.sub(pointOnLine).dot(lineNormal);
+        
+        if (d1 >= -1e-9) {
+          clipped.push(p1);
+        }
+        
+        if ((d1 >= 0 && d2 < 0) || (d1 < 0 && d2 >= 0)) {
+          const denom = d1 - d2;
+          if (Math.abs(denom) > 1e-9) {
+            const t = d1 / denom;
+            clipped.push(p1.add(p2.sub(p1).scale(t)));
+          }
+        }
+      }
+      return clipped;
+    };
+
+    for (let i = 0; i < seeds.length; i++) {
+      const si = seeds[i];
+      // Start with a large bounding box
+      let cellPoly = [
+        new Vector2D(-width, -height),
+        new Vector2D(width, -height),
+        new Vector2D(width, height),
+        new Vector2D(-width, height)
+      ];
+
+      for (let j = 0; j < seeds.length; j++) {
+        if (i === j) continue;
+        const sj = seeds[j];
+        
+        // Midpoint of segment Si - Sj (which lies on the perpendicular bisector line)
+        const mid = si.add(sj).scale(0.5);
+        // Line normal pointing towards Si
+        const norm = si.sub(sj).normalize();
+        
+        cellPoly = clipPolygon(cellPoly, mid, norm);
+      }
+      
+      cells.push({ seed: si, polygon: cellPoly });
+    }
+    
+    return cells;
   }
 }

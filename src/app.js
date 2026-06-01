@@ -11,13 +11,17 @@ const state = {
   showSkeleton: true,
   simplifySkeleton: false,
   mergeThreshold: 20,
+  showVoronoi: false,
+  pruneBranches: false,
+  showRibs: false,
+  ribDivisions: 5,
   hoverCircle: true,
   showGovernors: true,
   isDrawing: false,
   customVertices: [],
   draggedVertexIdx: -1,
   hoveredMedialPoint: null,
-  skeletonData: { regularPoints: [], junctionPoints: [], simplifiedSegments: [], simplifiedNodes: [] },
+  skeletonData: { regularPoints: [], junctionPoints: [], simplifiedSegments: [], simplifiedNodes: [], voronoiCells: [] },
   computeTime: 0,
 };
 
@@ -144,14 +148,23 @@ function recomputeMAT() {
   );
   skeleton.simplifiedSegments = segments;
   skeleton.simplifiedNodes = nodes;
+
+  // Compute exact trimmed Voronoi cells from interior simplified nodes (junctions)
+  const interiorSeeds = nodes.filter(p => !p.isEndPoint);
+  skeleton.voronoiCells = mat.computeVoronoiCells(interiorSeeds, canvas.width, canvas.height);
+  
   state.skeletonData = skeleton;
   
   state.computeTime = performance.now() - start;
 
-  // Dynamically sync visibility of merge distance slider
+  // Dynamically sync visibility of merge distance and ribs sliders
   const containerMerge = document.getElementById('container-merge-slider');
   if (containerMerge) {
     containerMerge.style.display = state.simplifySkeleton ? 'block' : 'none';
+  }
+  const containerRibs = document.getElementById('container-ribs-slider');
+  if (containerRibs) {
+    containerRibs.style.display = state.showRibs ? 'block' : 'none';
   }
 
   // Update Status HUD
@@ -176,7 +189,7 @@ function draw() {
   // 1. Grid Background
   drawGrid();
 
-  // 2. Draw Polygon Face
+  // 2. Draw Polygon Face & Trimmed Voronoi Partition
   if (state.polygon.length >= 3) {
     ctx.beginPath();
     ctx.moveTo(state.polygon[0].x, state.polygon[0].y);
@@ -194,6 +207,42 @@ function draw() {
     grad.addColorStop(1, 'rgba(6, 182, 212, 0.02)');
     ctx.fillStyle = grad;
     ctx.fill();
+
+    // Draw Trimmed Voronoi Cells if active
+    if (state.showVoronoi && state.skeletonData.voronoiCells.length > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(state.polygon[0].x, state.polygon[0].y);
+      for (let i = 1; i < state.polygon.length; i++) {
+        ctx.lineTo(state.polygon[i].x, state.polygon[i].y);
+      }
+      ctx.closePath();
+      ctx.clip(); // Clip everything to polygon boundary
+
+      // Draw each cell
+      state.skeletonData.voronoiCells.forEach((cell, idx) => {
+        if (cell.polygon.length >= 3) {
+          ctx.beginPath();
+          ctx.moveTo(cell.polygon[0].x, cell.polygon[0].y);
+          for (let k = 1; k < cell.polygon.length; k++) {
+            ctx.lineTo(cell.polygon[k].x, cell.polygon[k].y);
+          }
+          ctx.closePath();
+
+          // Smooth semi-transparent HSL color using golden ratio distribution
+          const hue = (idx * 137.5) % 360;
+          ctx.fillStyle = `hsla(${hue}, 65%, 45%, 0.16)`;
+          ctx.fill();
+
+          // Subtle glowing cell boundary borders
+          ctx.strokeStyle = `hsla(${hue}, 80%, 60%, 0.35)`;
+          ctx.lineWidth = 1.8;
+          ctx.setLineDash([4, 2]);
+          ctx.stroke();
+        }
+      });
+      ctx.restore();
+    }
 
     // Polygon boundary border
     ctx.strokeStyle = 'rgba(99, 102, 241, 0.45)';
@@ -238,7 +287,12 @@ function draw() {
       ctx.lineWidth = 3.5;
       ctx.setLineDash([]);
       
-      for (const seg of state.skeletonData.simplifiedSegments) {
+      // If pruning is active, filter out any segments that connect to an endPoint (leaf node)
+      const segmentsToDraw = state.pruneBranches
+        ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
+        : state.skeletonData.simplifiedSegments;
+
+      for (const seg of segmentsToDraw) {
         ctx.beginPath();
         ctx.moveTo(seg.start.x, seg.start.y);
         ctx.lineTo(seg.end.x, seg.end.y);
@@ -281,9 +335,14 @@ function draw() {
 
     // Draw isolated Junction/End points as larger hot-pink indicators
     // If simplified, draw the merged centroid nodes instead of the raw overlapping junction points
-    const nodesToDraw = state.simplifySkeleton 
+    let nodesToDraw = state.simplifySkeleton 
       ? state.skeletonData.simplifiedNodes 
       : state.skeletonData.junctionPoints;
+
+    // If pruning is active, hide the convex boundary end points (leaves)
+    if (state.pruneBranches) {
+      nodesToDraw = nodesToDraw.filter(p => !p.isEndPoint);
+    }
 
     for (const jp of nodesToDraw) {
       ctx.beginPath();
@@ -301,6 +360,85 @@ function draw() {
       ctx.stroke();
     }
     ctx.shadowBlur = 0; // reset
+
+    // C2. Draw Structural Ribs if active
+    if (state.showSkeleton && state.showRibs) {
+      const segmentsToDivide = state.pruneBranches
+        ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
+        : state.skeletonData.simplifiedSegments;
+
+      const N = state.ribDivisions;
+      ctx.shadowBlur = 0;
+
+      for (const seg of segmentsToDivide) {
+        const startPt = seg.start;
+        const endPt = seg.end;
+        const vec = endPt.sub(startPt);
+
+        for (let k = 1; k < N; k++) {
+          const t = k / N;
+          const D_k = startPt.add(vec.scale(t));
+
+          // Draw division point on the spine
+          ctx.beginPath();
+          ctx.arc(D_k.x, D_k.y, 3, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+
+          // Find all closest points on all segments to D_k
+          const candidates = [];
+          for (let i = 0; i < state.polygon.length; i++) {
+            const v1 = state.polygon[i];
+            const v2 = state.polygon[(i + 1) % state.polygon.length];
+            const cp = closestPointOnSegment(D_k, v1, v2);
+            const dist = D_k.dist(cp);
+            candidates.push({
+              point: cp,
+              dist: dist,
+              vector: cp.sub(D_k).normalize()
+            });
+          }
+
+          // Sort candidates by distance to find the closest points
+          candidates.sort((a, b) => a.dist - b.dist);
+
+          const closest1 = candidates[0];
+          let closest2 = null;
+
+          // Find the closest opposing boundary point (dot product < 0.5, i.e., angle > 60 degrees)
+          for (let i = 1; i < candidates.length; i++) {
+            const cand = candidates[i];
+            const dot = closest1.vector.dot(cand.vector);
+            if (dot < 0.5) {
+              closest2 = cand;
+              break;
+            }
+          }
+
+          const ribsToDraw = [closest1];
+          if (closest2) {
+            ribsToDraw.push(closest2);
+          }
+
+          for (const rib of ribsToDraw) {
+            // Draw structural rib line to boundary
+            ctx.beginPath();
+            ctx.moveTo(D_k.x, D_k.y);
+            ctx.lineTo(rib.point.x, rib.point.y);
+            ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)'; // Hot-pink red ribs
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([2, 2]);
+            ctx.stroke();
+
+            // Draw contact point on boundary
+            ctx.beginPath();
+            ctx.arc(rib.point.x, rib.point.y, 3, 0, Math.PI * 2);
+            ctx.fillStyle = '#f43f5e';
+            ctx.fill();
+          }
+        }
+      }
+    }
   }
 
   // 5. Draw Interactive Inscribed Circumcircle & Governors
@@ -447,6 +585,35 @@ function setupEventListeners() {
     state.simplifySkeleton = e.target.checked;
     recomputeMAT();
   });
+  document.getElementById('chk-prune-branches').addEventListener('change', (e) => {
+    state.pruneBranches = e.target.checked;
+    if (state.pruneBranches) {
+      // Auto-enable simplify skeleton as it relies on the MST nodes
+      state.simplifySkeleton = true;
+      const chkSimplify = document.getElementById('chk-simplify-skeleton');
+      if (chkSimplify) chkSimplify.checked = true;
+    }
+    recomputeMAT();
+  });
+  document.getElementById('chk-show-ribs').addEventListener('change', (e) => {
+    state.showRibs = e.target.checked;
+    if (state.showRibs) {
+      // Auto-enable simplify skeleton as ribs are constructed on MST segments
+      state.simplifySkeleton = true;
+      const chkSimplify = document.getElementById('chk-simplify-skeleton');
+      if (chkSimplify) chkSimplify.checked = true;
+    }
+    recomputeMAT();
+  });
+  
+  // Slider - Rib divisions N
+  const sRibs = document.getElementById('slider-ribs');
+  const valRibs = document.getElementById('val-ribs');
+  sRibs.addEventListener('input', (e) => {
+    state.ribDivisions = parseInt(e.target.value);
+    valRibs.innerText = state.ribDivisions;
+    requestAnimationFrame(draw);
+  });
   
   // Slider - Merge distance for vertices
   const sMerge = document.getElementById('slider-merge');
@@ -457,6 +624,10 @@ function setupEventListeners() {
     recomputeMAT();
   });
 
+  document.getElementById('chk-show-voronoi').addEventListener('change', (e) => {
+    state.showVoronoi = e.target.checked;
+    requestAnimationFrame(draw);
+  });
   document.getElementById('chk-hover-circle').addEventListener('change', (e) => {
     state.hoverCircle = e.target.checked;
     if (!state.hoverCircle) state.hoveredMedialPoint = null;
