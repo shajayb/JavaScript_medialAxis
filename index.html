@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive 2D Medial Axis Transform (MAT) Visualizer</title>
+  <meta name="description" content="An interactive real-time visualizer for the fast sampling-based 2D Medial Axis Transform algorithm. Draw custom polygons and inspect skeleton branches, junction points, and maximal inscribed circles.">
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon"></div>
+      <h1>Medial Axis Transform</h1>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-primary" id="btn-draw-custom">
+        <span class="hud-tips-icon">✍</span> Draw Custom Polygon
+      </button>
+      <button class="btn" id="btn-clear-custom" style="display: none;">
+        <span>🗑</span> Clear Drawing
+      </button>
+    </div>
+  </header>
+
+  <!-- App Body Container -->
+  <div class="app-container">
+    <!-- Drawing Mode Indicator -->
+    <div class="drawing-indicator" id="drawing-indicator" style="display: none;">
+      <span class="indicator-pulse"></span>
+      <span id="drawing-text">Drawing Mode: Click to add vertices (min 3). Click first vertex to close.</span>
+    </div>
+
+    <!-- Canvas Wrapper -->
+    <div class="canvas-wrapper" id="canvas-wrapper">
+      <canvas id="polygon-canvas" width="800" height="600"></canvas>
+    </div>
+
+    <!-- HUD Control Sidebar -->
+    <aside class="control-sidebar">
+      <div class="sidebar-header">
+        <h2>Visualizer Dashboard</h2>
+        <span class="hud-tips-icon" style="font-size: 1rem;">⚙</span>
+      </div>
+
+      <div class="sidebar-scroll">
+        <!-- Presets Selection -->
+        <section class="control-group">
+          <h3>Shape Presets</h3>
+          <div class="presets-grid">
+            <div class="preset-card active" data-preset="square">
+              <span class="preset-icon">⬜</span>
+              <span class="preset-name">Square</span>
+            </div>
+            <div class="preset-card" data-preset="star">
+              <span class="preset-icon">⭐</span>
+              <span class="preset-name">Star Shape</span>
+            </div>
+            <div class="preset-card" data-preset="triangle">
+              <span class="preset-icon">▲</span>
+              <span class="preset-name">Triangle</span>
+            </div>
+            <div class="preset-card" data-preset="lshape">
+              <span class="preset-icon">⏌</span>
+              <span class="preset-name">L-Shape</span>
+            </div>
+            <div class="preset-card" data-preset="crown">
+              <span class="preset-icon">👑</span>
+              <span class="preset-name">Crown</span>
+            </div>
+            <div class="preset-card" id="card-custom" style="display: none;">
+              <span class="preset-icon">✏</span>
+              <span class="preset-name">Custom</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tracing Parameters -->
+        <section class="control-group">
+          <h3>MAT Parameters</h3>
+
+          <!-- Sampling Density Slider -->
+          <div class="slider-container">
+            <div class="slider-info">
+              <span class="slider-label">Samples per Edge</span>
+              <span class="slider-value" id="val-samples">25</span>
+            </div>
+            <input type="range" id="slider-samples" min="5" max="100" value="25">
+          </div>
+
+          <!-- Convergence Epsilon Slider -->
+          <div class="slider-container">
+            <div class="slider-info">
+              <span class="slider-label">Bisection Precision</span>
+              <span class="slider-value" id="val-precision">1e-5</span>
+            </div>
+            <input type="range" id="slider-precision" min="3" max="7" value="5">
+          </div>
+        </section>
+
+        <!-- Toggle Overlays -->
+        <section class="control-group">
+          <h3>Display Overlays</h3>
+
+          <!-- Show Skeleton -->
+          <div class="toggle-container" id="toggle-skeleton-container">
+            <div class="toggle-details">
+              <span class="toggle-label">Show Medial Axis</span>
+              <span class="toggle-sub">Draws the computed skeleton points</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chk-show-skeleton" checked>
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+
+          <!-- Simplify Medial Axis -->
+          <div class="toggle-container" id="toggle-simplify-skeleton-container">
+            <div class="toggle-details">
+              <span class="toggle-label">Simplify Medial Axis</span>
+              <span class="toggle-sub">Straighten branches (valence 3 to valence 1)</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chk-simplify-skeleton">
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+
+          <!-- Merge Nodes Slider -->
+          <div class="slider-container" id="container-merge-slider" style="display: none; margin-top: 10px; margin-bottom: 15px;">
+            <div class="slider-info">
+              <span class="slider-label">Node Merge Distance</span>
+              <span class="slider-value" id="val-merge">20px</span>
+            </div>
+            <input type="range" id="slider-merge" min="0" max="50" value="20">
+          </div>
+
+          <!-- Show Inscribed Circle on Hover -->
+          <div class="toggle-container" id="toggle-hover-circle-container">
+            <div class="toggle-details">
+              <span class="toggle-label">Interactive Circles</span>
+              <span class="toggle-sub">Hover near axis to see maximal inscribed discs</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chk-hover-circle" checked>
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+
+          <!-- Show Governors -->
+          <div class="toggle-container" id="toggle-governors-container">
+            <div class="toggle-details">
+              <span class="toggle-label">Render Governors</span>
+              <span class="toggle-sub">Draw vectors linking center to tangency points</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chk-show-governors" checked>
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Quick Tips HUD -->
+        <div class="hud-tips">
+          <span class="hud-tips-icon">💡</span>
+          <div>
+            <strong>Interactive Visualizer Tips:</strong>
+            <p style="margin-top: 4px; font-size: 0.8rem;">Click and drag vertices to modify shapes in real-time. Hover over the medial axis to see the maximal inscribed circle sweep.</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Status Bar -->
+  <footer class="status-bar">
+    <div class="status-item">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Engine Ready.</span>
+    </div>
+    <div id="stats-render-time">Computation: --ms</div>
+  </footer>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
