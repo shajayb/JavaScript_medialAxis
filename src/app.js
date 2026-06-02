@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MedialAxisTransform } from './medialAxis.js';
 import { Vector2D } from './utils/vector2d.js';
 import { distanceToPolygon, closestPointOnSegment } from './utils/geometry.js';
@@ -24,158 +26,249 @@ const state = {
   skeletonData: { regularPoints: [], junctionPoints: [], simplifiedSegments: [], simplifiedNodes: [], voronoiCells: [] },
   computeTime: 0,
   camera: {
-    x: 0,
-    y: 0,
-    zoom: 1.0,
-    isPanning: false,
-    panStart: null
+    zoom: 1.0 // kept for backward compatibility and HUD display
   },
   mouseWorldPos: null,
 };
 
 // Canvas Setup
 const canvas = document.getElementById('polygon-canvas');
-const ctx = canvas.getContext('2d');
 const wrapper = document.getElementById('canvas-wrapper');
 
-// Screen/World Space transformations
-function screenToWorld(screenPos) {
-  return new Vector2D(
-    (screenPos.x - state.camera.x) / state.camera.zoom,
-    (screenPos.y - state.camera.y) / state.camera.zoom
-  );
-}
+// Three.js State Variables
+let renderer, scene, cameraPerspective, cameraOrthographic, cameraActive;
+let controls;
+let meshesGroup; // Group to hold all dynamic geometric meshes
+const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0); // Z=0 plane for raycast dragging
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
 
-function worldToScreen(worldPos) {
-  return new Vector2D(
-    worldPos.x * state.camera.zoom + state.camera.x,
-    worldPos.y * state.camera.zoom + state.camera.y
-  );
-}
+// Initialize Three.js 3D Engine
+function initThree() {
+  const rect = wrapper.getBoundingClientRect();
+  const width = Math.max(800, rect.width - 40);
+  const height = Math.max(600, rect.height - 40);
 
-function updateCameraHUD() {
-  const elInfo = document.getElementById('camera-info');
-  if (elInfo) {
-    elInfo.innerText = `Zoom: ${state.camera.zoom.toFixed(2)}x`;
-  }
-}
+  // 1. WebGL Renderer
+  renderer = new THREE.WebGLRenderer({
+    canvas: canvas,
+    antialias: true,
+    alpha: true
+  });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(width, height);
+  renderer.setClearColor(0xffffff, 1.0); // Clean White Canvas Background
+  renderer.shadowMap.enabled = true;
 
-function resetCameraView() {
-  if (state.polygon.length === 0) {
-    state.camera = { x: 0, y: 0, zoom: 1.0, isPanning: false, panStart: null };
-    updateCameraHUD();
-    return;
-  }
+  // 2. Scene
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xffffff); // Crisp white workspace
+
+  // 3. Perspective Camera
+  cameraPerspective = new THREE.PerspectiveCamera(45, width / height, 1, 10000);
+  cameraPerspective.position.set(0, -600, 600); // Tilted CAD angle
+  cameraPerspective.up.set(0, 0, 1); // Z is UP!
+
+  // 4. Orthographic Camera (For precise 2D Top View)
+  const aspect = width / height;
+  cameraOrthographic = new THREE.OrthographicCamera(-500 * aspect, 500 * aspect, 500, -500, 1, 10000);
+  cameraOrthographic.position.set(0, 0, 1000);
+  cameraOrthographic.up.set(0, 1, 0); // Y is up in 2D Top View
+
+  cameraActive = cameraPerspective;
+
+  // 5. OrbitControls (3D Arcball Camera)
+  controls = new OrbitControls(cameraActive, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+  controls.maxPolarAngle = Math.PI / 2 - 0.01; // Restrict camera below Z=0 grid floor
+  controls.minDistance = 50;
+  controls.maxDistance = 3000;
+
+  // 6. Lighting
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
+  scene.add(ambientLight);
+
+  const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.4);
+  dirLight1.position.set(1000, 800, 1500);
+  scene.add(dirLight1);
+
+  const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.2);
+  dirLight2.position.set(-1000, -800, 1000);
+  scene.add(dirLight2);
+
+  // 7. Infinite CAD Grid Floor on XY Plane
+  const gridHelper = new THREE.GridHelper(5000, 125, 0xe2e8f0, 0xf1f5f9); // Beautiful light gray grid lines
+  gridHelper.rotation.x = Math.PI / 2; // Rotate grid to align with XY plane
+  gridHelper.position.z = -0.01; // Slightly below Z=0 to prevent z-fighting
+  scene.add(gridHelper);
+
+  // 8. Meshes Parent Group
+  meshesGroup = new THREE.Group();
+  scene.add(meshesGroup);
+
+  // 9. Resize Canvas
+  window.addEventListener('resize', resizeCanvas);
   
+  // 10. Start high-performance render loop
+  animate();
+}
+
+// Map screen/canvas coordinates to 3D world space (Z=0 plane intersection)
+function screenToWorld(screenPos) {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = (screenPos.x / rect.width) * 2 - 1;
+  mouse.y = -(screenPos.y / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, cameraActive);
+  const target = new THREE.Vector3();
+  raycaster.ray.intersectPlane(planeZ, target);
+  return new Vector2D(target.x, target.y);
+}
+
+// Map 3D world space coordinate back to 2D screen pixels
+function worldToScreen(worldPos) {
+  const vec = new THREE.Vector3(worldPos.x, worldPos.y, 0.0);
+  vec.project(cameraActive);
+
+  const rect = canvas.getBoundingClientRect();
+  return new Vector2D(
+    (vec.x * 0.5 + 0.5) * rect.width,
+    (-(vec.y * 0.5) + 0.5) * rect.height
+  );
+}
+
+// Helper to get bounding box center of active shape
+function getModelCenter() {
+  if (state.polygon.length === 0) return new Vector2D(0, 0);
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
   for (const v of state.polygon) {
     minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
     minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
   }
-  
+  return new Vector2D((minX + maxX) / 2, (minY + maxY) / 2);
+}
+
+function updateCameraHUD() {
+  const elInfo = document.getElementById('camera-info');
+  if (elInfo) {
+    // Zoom representation in 3D: Distance from control target to camera
+    const dist = cameraActive.position.distanceTo(controls.target);
+    const zoomText = cameraActive.isOrthographicCamera 
+      ? `${(1000 / cameraActive.zoom).toFixed(0)}m` 
+      : `${(1000 / dist).toFixed(2)}x`;
+    elInfo.innerText = `View Scale: ${zoomText}`;
+  }
+}
+
+// Switch between CAD Top View and 3D Perspective View
+function setCameraView(type) {
+  const btnPersp = document.getElementById('btn-view-perspective');
+  const btnTop = document.getElementById('btn-view-top');
+
+  if (type === 'perspective') {
+    cameraActive = cameraPerspective;
+    controls.object = cameraActive;
+    controls.enableRotate = true; // Allow orbiting
+    btnPersp.classList.add('active');
+    btnTop.classList.remove('active');
+  } else {
+    cameraActive = cameraOrthographic;
+    
+    // Position Orthographic camera straight down looking at model center
+    const center = getModelCenter();
+    controls.target.set(center.x, center.y, 0);
+    cameraOrthographic.position.set(center.x, center.y, 1000);
+    cameraOrthographic.up.set(0, 1, 0); // Y is UP in 2D layout
+
+    controls.object = cameraActive;
+    controls.enableRotate = false; // Restrict rotation in 2D top view
+    btnPersp.classList.remove('active');
+    btnTop.classList.add('active');
+  }
+  controls.update();
+  updateCameraHUD();
+}
+
+// Auto-fit shape to viewport with 30% boundary padding
+function resetCameraView() {
+  if (state.polygon.length === 0) {
+    controls.target.set(0, 0, 0);
+    cameraPerspective.position.set(0, -600, 600);
+    cameraOrthographic.position.set(0, 0, 1000);
+    cameraOrthographic.zoom = 1.0;
+    cameraOrthographic.updateProjectionMatrix();
+    controls.update();
+    updateCameraHUD();
+    return;
+  }
+
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  for (const v of state.polygon) {
+    minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
+    minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+  }
+
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const wSpan = maxX - minX || 1;
   const hSpan = maxY - minY || 1;
+  const maxSpan = Math.max(wSpan, hSpan);
+
+  // 1. Perspective View Centering
+  controls.target.set(cx, cy, 0);
+  cameraPerspective.position.set(cx, cy - maxSpan * 1.3, maxSpan * 1.3);
+
+  // 2. Orthographic View Centering
+  const rect = wrapper.getBoundingClientRect();
+  const width = Math.max(800, rect.width - 40);
+  const height = Math.max(600, rect.height - 40);
+  const aspect = width / height;
+  const size = maxSpan * 1.45;
   
-  // Fit with 30% padding
-  const padding = 0.7;
-  const scaleX = (canvas.width * padding) / wSpan;
-  const scaleY = (canvas.height * padding) / hSpan;
-  const zoom = Math.min(2.5, Math.max(0.2, Math.min(scaleX, scaleY)));
-  
-  state.camera.zoom = zoom;
-  state.camera.x = canvas.width / 2 - cx * zoom;
-  state.camera.y = canvas.height / 2 - cy * zoom;
-  
+  cameraOrthographic.left = -size * aspect / 2;
+  cameraOrthographic.right = size * aspect / 2;
+  cameraOrthographic.top = size / 2;
+  cameraOrthographic.bottom = -size / 2;
+  cameraOrthographic.zoom = 1.0;
+  cameraOrthographic.position.set(cx, cy, 1000);
+  cameraOrthographic.updateProjectionMatrix();
+
+  controls.update();
   updateCameraHUD();
-  requestAnimationFrame(draw);
 }
 
-// Resize canvas to match wrapper bounds or default to 800x600
+// Resizes renderer viewport bounds smoothly
 function resizeCanvas() {
   const rect = wrapper.getBoundingClientRect();
-  canvas.width = Math.max(800, rect.width - 40);
-  canvas.height = Math.max(600, rect.height - 40);
-  loadPreset(state.activePreset);
-}
+  const width = Math.max(800, rect.width - 40);
+  const height = Math.max(600, rect.height - 40);
 
-// Polygon Presets Generators
-const presets = {
-  square: (w, h) => {
-    const cx = w / 2;
-    const cy = h / 2;
-    const size = Math.min(w, h) * 0.55;
-    return [
-      new Vector2D(cx - size / 2, cy - size / 2),
-      new Vector2D(cx + size / 2, cy - size / 2),
-      new Vector2D(cx + size / 2, cy + size / 2),
-      new Vector2D(cx - size / 2, cy + size / 2),
-    ];
-  },
-  triangle: (w, h) => {
-    const cx = w / 2;
-    const cy = h / 2;
-    const size = Math.min(w, h) * 0.65;
-    return [
-      new Vector2D(cx, cy - size * 0.55),
-      new Vector2D(cx + size * 0.5, cy + size * 0.35),
-      new Vector2D(cx - size * 0.5, cy + size * 0.35),
-    ];
-  },
-  lshape: (w, h) => {
-    const cx = w / 2;
-    const cy = h / 2;
-    const size = Math.min(w, h) * 0.6;
-    const half = size / 2;
-    const inner = size * 0.15;
-    return [
-      new Vector2D(cx - half, cy - half),
-      new Vector2D(cx + inner, cy - half),
-      new Vector2D(cx + inner, cy + inner),
-      new Vector2D(cx + half, cy + inner),
-      new Vector2D(cx + half, cy + half),
-      new Vector2D(cx - half, cy + half),
-    ];
-  },
-  star: (w, h) => {
-    const cx = w / 2;
-    const cy = h / 2;
-    const rOuter = Math.min(w, h) * 0.35;
-    const rInner = rOuter * 0.4;
-    const points = [];
-    for (let i = 0; i < 10; i++) {
-      const angle = (i * Math.PI) / 5 - Math.PI / 2;
-      const r = i % 2 === 0 ? rOuter : rInner;
-      points.push(new Vector2D(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r));
-    }
-    return points;
-  },
-  crown: (w, h) => {
-    const cx = w / 2;
-    const cy = h / 2;
-    const size = Math.min(w, h) * 0.6;
-    return [
-      new Vector2D(cx - size * 0.5, cy - size * 0.2),
-      new Vector2D(cx - size * 0.3, cy + size * 0.3),
-      new Vector2D(cx, cy - size * 0.05),
-      new Vector2D(cx + size * 0.3, cy + size * 0.3),
-      new Vector2D(cx + size * 0.5, cy - size * 0.2),
-      new Vector2D(cx + size * 0.45, cy - size * 0.4),
-      new Vector2D(cx + size * 0.2, cy - size * 0.1),
-      new Vector2D(cx, cy - size * 0.45),
-      new Vector2D(cx - size * 0.2, cy - size * 0.1),
-      new Vector2D(cx - size * 0.45, cy - size * 0.4),
-    ];
-  }
-};
+  // Update cameras aspect
+  cameraPerspective.aspect = width / height;
+  cameraPerspective.updateProjectionMatrix();
+
+  const aspect = width / height;
+  const size = (cameraOrthographic.top - cameraOrthographic.bottom);
+  cameraOrthographic.left = -size * aspect / 2;
+  cameraOrthographic.right = size * aspect / 2;
+  cameraOrthographic.updateProjectionMatrix();
+
+  renderer.setSize(width, height);
+  updateCameraHUD();
+}
 
 // Loads a preset shape and triggers computation
 function loadPreset(name) {
   state.activePreset = name;
+  const rect = wrapper.getBoundingClientRect();
+  const w = Math.max(800, rect.width - 40);
+  const h = Math.max(600, rect.height - 40);
+
   if (name !== 'custom') {
-    state.polygon = presets[name](canvas.width, canvas.height);
+    state.polygon = presets[name](w, h);
     state.isDrawing = false;
     document.getElementById('btn-clear-custom').style.display = 'none';
     document.getElementById('drawing-indicator').style.display = 'none';
@@ -185,11 +278,71 @@ function loadPreset(name) {
   resetCameraView();
 }
 
+// Polygon Presets Generators (centered around 0,0 in world space)
+const presets = {
+  square: (w, h) => {
+    const size = Math.min(w, h) * 0.55;
+    return [
+      new Vector2D(-size / 2, -size / 2),
+      new Vector2D(size / 2, -size / 2),
+      new Vector2D(size / 2, size / 2),
+      new Vector2D(-size / 2, size / 2),
+    ];
+  },
+  triangle: (w, h) => {
+    const size = Math.min(w, h) * 0.65;
+    return [
+      new Vector2D(0, size * 0.45),
+      new Vector2D(size * 0.5, -size * 0.35),
+      new Vector2D(-size * 0.5, -size * 0.35),
+    ];
+  },
+  lshape: (w, h) => {
+    const size = Math.min(w, h) * 0.6;
+    const half = size / 2;
+    const inner = size * 0.15;
+    return [
+      new Vector2D(-half, -half),
+      new Vector2D(inner, -half),
+      new Vector2D(inner, inner),
+      new Vector2D(half, inner),
+      new Vector2D(half, half),
+      new Vector2D(-half, half),
+    ];
+  },
+  star: (w, h) => {
+    const rOuter = Math.min(w, h) * 0.35;
+    const rInner = rOuter * 0.4;
+    const points = [];
+    for (let i = 0; i < 10; i++) {
+      const angle = (i * Math.PI) / 5 - Math.PI / 2;
+      const r = i % 2 === 0 ? rOuter : rInner;
+      points.push(new Vector2D(Math.cos(angle) * r, Math.sin(angle) * r));
+    }
+    return points;
+  },
+  crown: (w, h) => {
+    const size = Math.min(w, h) * 0.6;
+    return [
+      new Vector2D(-size * 0.5, -size * 0.2),
+      new Vector2D(-size * 0.3, size * 0.3),
+      new Vector2D(0, -size * 0.05),
+      new Vector2D(size * 0.3, size * 0.3),
+      new Vector2D(size * 0.5, -size * 0.2),
+      new Vector2D(size * 0.45, -size * 0.4),
+      new Vector2D(size * 0.2, -size * 0.1),
+      new Vector2D(0, -size * 0.45),
+      new Vector2D(-size * 0.2, -size * 0.1),
+      new Vector2D(-size * 0.45, -size * 0.4),
+    ];
+  }
+};
+
 // Compute the Medial Axis Transform using core library class
 function recomputeMAT() {
   if (state.polygon.length < 3) {
     state.skeletonData = { regularPoints: [], junctionPoints: [] };
-    requestAnimationFrame(draw);
+    draw();
     return;
   }
 
@@ -198,13 +351,13 @@ function recomputeMAT() {
   // Initialize MAT with user tolerances
   const mat = new MedialAxisTransform(state.polygon, {
     epsilon: state.precision,
-    tangentEpsilon: state.precision * 10.0, // padded threshold for governor identification
+    tangentEpsilon: state.precision * 10.0,
   });
 
-  // Perform structured tracing with bisection and effective normal calculation
+  // Perform structured tracing
   const skeleton = mat.computeStructuredSkeleton(state.samplesPerEdge);
   
-  // Compute simplified straight branches & merged nodes using distance threshold if active
+  // Compute simplified straight branches & merged nodes
   const { segments, nodes } = mat.simplifySkeleton(
     skeleton.regularPoints, 
     skeleton.junctionPoints, 
@@ -213,15 +366,14 @@ function recomputeMAT() {
   skeleton.simplifiedSegments = segments;
   skeleton.simplifiedNodes = nodes;
 
-  // Compute exact trimmed Voronoi cells from interior simplified nodes (junctions)
+  // Compute exact trimmed Voronoi cells from interior nodes (Z-plane bounds)
   const interiorSeeds = nodes.filter(p => !p.isEndPoint);
-  skeleton.voronoiCells = mat.computeVoronoiCells(interiorSeeds, canvas.width, canvas.height);
+  skeleton.voronoiCells = mat.computeVoronoiCells(interiorSeeds, 2000, 2000);
   
   state.skeletonData = skeleton;
-  
   state.computeTime = performance.now() - start;
 
-  // Dynamically sync visibility of merge distance and ribs sliders
+  // Sync visibility of merge distance and ribs sliders
   const containerMerge = document.getElementById('container-merge-slider');
   if (containerMerge) {
     containerMerge.style.display = state.simplifySkeleton ? 'block' : 'none';
@@ -241,259 +393,276 @@ function recomputeMAT() {
     : `Computed ${count} medial points successfully.`;
   document.getElementById('status-text').innerText = statusMsg;
 
-  // Reset hovered point and redraw
   state.hoveredMedialPoint = null;
-  requestAnimationFrame(draw);
+  draw();
 }
 
-// Drawing Routine
+// 3D Scene Geometry Builder (Clears and populates meshesGroup)
 function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!meshesGroup) return;
 
-  ctx.save();
-  ctx.translate(state.camera.x, state.camera.y);
-  ctx.scale(state.camera.zoom, state.camera.zoom);
-
-  // 1. Grid Background
-  drawGrid();
-
-  // 2. Draw Polygon Face & Trimmed Voronoi Partition
-  if (state.polygon.length >= 3) {
-    ctx.beginPath();
-    ctx.moveTo(state.polygon[0].x, state.polygon[0].y);
-    for (let i = 1; i < state.polygon.length; i++) {
-      ctx.lineTo(state.polygon[i].x, state.polygon[i].y);
-    }
-    ctx.closePath();
-
-    // Elegant glowing flat fill (transparent, zooms perfectly with camera)
-    ctx.fillStyle = 'rgba(99, 102, 241, 0.05)';
-    ctx.fill();
-
-    // Draw Trimmed Voronoi Cells if active
-    if (state.showVoronoi && state.skeletonData.voronoiCells.length > 0) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(state.polygon[0].x, state.polygon[0].y);
-      for (let i = 1; i < state.polygon.length; i++) {
-        ctx.lineTo(state.polygon[i].x, state.polygon[i].y);
+  // 1. Clear previous dynamic 3D meshes
+  while (meshesGroup.children.length > 0) {
+    const child = meshesGroup.children[0];
+    meshesGroup.remove(child);
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) {
+      if (Array.isArray(child.material)) {
+        child.material.forEach(m => m.dispose());
+      } else {
+        child.material.dispose();
       }
-      ctx.closePath();
-      ctx.clip(); // Clip everything to polygon boundary
-
-      // Draw each cell
-      state.skeletonData.voronoiCells.forEach((cell, idx) => {
-        if (cell.polygon.length >= 3) {
-          ctx.beginPath();
-          ctx.moveTo(cell.polygon[0].x, cell.polygon[0].y);
-          for (let k = 1; k < cell.polygon.length; k++) {
-            ctx.lineTo(cell.polygon[k].x, cell.polygon[k].y);
-          }
-          ctx.closePath();
-
-          // Smooth semi-transparent HSL color using golden ratio distribution
-          const hue = (idx * 137.5) % 360;
-          ctx.fillStyle = `hsla(${hue}, 65%, 45%, 0.16)`;
-          ctx.fill();
-
-          // Subtle glowing cell boundary borders
-          ctx.strokeStyle = `hsla(${hue}, 80%, 60%, 0.35)`;
-          ctx.lineWidth = 1.8 / state.camera.zoom;
-          ctx.setLineDash([4 / state.camera.zoom, 2 / state.camera.zoom]);
-          ctx.stroke();
-        }
-      });
-      ctx.restore();
     }
-
-    // Polygon boundary border
-    ctx.strokeStyle = 'rgba(99, 102, 241, 0.45)';
-    ctx.lineWidth = 2.5 / state.camera.zoom;
-    ctx.setLineDash([]);
-    ctx.stroke();
   }
 
-  // 3. Draw Custom Polygon Draw preview (if drawing)
+  // 2. Draw Polygon Face & Outlines
+  if (state.polygon.length >= 3) {
+    // Flat Translucent Indigo Polygon Face Fill
+    const shape = new THREE.Shape();
+    shape.moveTo(state.polygon[0].x, state.polygon[0].y);
+    for (let i = 1; i < state.polygon.length; i++) {
+      shape.lineTo(state.polygon[i].x, state.polygon[i].y);
+    }
+    shape.closePath();
+
+    const faceGeom = new THREE.ShapeGeometry(shape);
+    const faceMat = new THREE.MeshBasicMaterial({
+      color: 0x4f46e5, // Royal Indigo
+      transparent: true,
+      opacity: 0.05,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const faceMesh = new THREE.Mesh(faceGeom, faceMat);
+    faceMesh.position.z = 0.005; // Slightly off the grid floor
+    meshesGroup.add(faceMesh);
+
+    // Trimmed Voronoi Partition Cells
+    if (state.showVoronoi && state.skeletonData.voronoiCells.length > 0) {
+      state.skeletonData.voronoiCells.forEach((cell, idx) => {
+        if (cell.polygon.length >= 3) {
+          const cellShape = new THREE.Shape();
+          cellShape.moveTo(cell.polygon[0].x, cell.polygon[0].y);
+          for (let k = 1; k < cell.polygon.length; k++) {
+            cellShape.lineTo(cell.polygon[k].x, cell.polygon[k].y);
+          }
+          cellShape.closePath();
+
+          const hue = (idx * 137.5) % 360;
+          const vGeom = new THREE.ShapeGeometry(cellShape);
+          const vMat = new THREE.MeshBasicMaterial({
+            color: new THREE.Color(`hsl(${hue}, 70%, 55%)`),
+            transparent: true,
+            opacity: 0.12,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          });
+          const vMesh = new THREE.Mesh(vGeom, vMat);
+          vMesh.position.z = 0.01;
+          meshesGroup.add(vMesh);
+
+          // Subtle Glowing Cell Boundary Lines
+          const vPts = cell.polygon.map(p => new THREE.Vector3(p.x, p.y, 0.012));
+          vPts.push(vPts[0]); // Close outline
+          const vBorderGeom = new THREE.BufferGeometry().setFromPoints(vPts);
+          const vBorderMat = new THREE.LineBasicMaterial({
+            color: new THREE.Color(`hsl(${hue}, 85%, 65%)`),
+            transparent: true,
+            opacity: 0.4
+          });
+          const vBorderLine = new THREE.Line(vBorderGeom, vBorderMat);
+          meshesGroup.add(vBorderLine);
+        }
+      });
+    }
+
+    // Polygon Thick Boundary Outline (Slightly raised Z to overlay clean)
+    const boundaryPts = state.polygon.map(p => new THREE.Vector3(p.x, p.y, 0.02));
+    boundaryPts.push(boundaryPts[0]); // Close boundary
+    const boundaryGeom = new THREE.BufferGeometry().setFromPoints(boundaryPts);
+    const boundaryMat = new THREE.LineBasicMaterial({
+      color: 0x4f46e5, // Royal Indigo
+      linewidth: 2.0
+    });
+    const boundaryLine = new THREE.Line(boundaryGeom, boundaryMat);
+    meshesGroup.add(boundaryLine);
+  }
+
+  // 3. Custom Polygon Drawing Preview
   if (state.isDrawing && state.customVertices.length > 0) {
-    ctx.beginPath();
-    ctx.moveTo(state.customVertices[0].x, state.customVertices[0].y);
-    for (let i = 1; i < state.customVertices.length; i++) {
-      ctx.lineTo(state.customVertices[i].x, state.customVertices[i].y);
-    }
-    ctx.strokeStyle = '#ec4899';
-    ctx.lineWidth = 2 / state.camera.zoom;
-    ctx.setLineDash([4 / state.camera.zoom, 4 / state.camera.zoom]);
-    ctx.stroke();
-
-    // Visual helper: dashed line to current mouse cursor in world space
+    const previewPts = state.customVertices.map(v => new THREE.Vector3(v.x, v.y, 0.025));
+    
+    // Live dashed line tracking cursor position
     if (state.mouseWorldPos) {
-      ctx.beginPath();
-      ctx.moveTo(state.customVertices[state.customVertices.length - 1].x, state.customVertices[state.customVertices.length - 1].y);
-      ctx.lineTo(state.mouseWorldPos.x, state.mouseWorldPos.y);
+      previewPts.push(new THREE.Vector3(state.mouseWorldPos.x, state.mouseWorldPos.y, 0.025));
       
-      // If we have at least 3 vertices, draw a secondary dashed line to the 1st vertex to show closure helper
       if (state.customVertices.length >= 3) {
-        // Highlight connection to closure vertex if hovered near first vertex
-        const screenMouse = worldToScreen(state.mouseWorldPos);
-        const screenFirst = worldToScreen(state.customVertices[0]);
-        const isNearFirst = screenMouse.dist(screenFirst) < 12;
-        
-        ctx.strokeStyle = isNearFirst ? '#10b981' : 'rgba(236, 72, 153, 0.4)'; // green if closing
-        ctx.lineWidth = (isNearFirst ? 2.5 : 1.5) / state.camera.zoom;
-        ctx.lineTo(state.customVertices[0].x, state.customVertices[0].y);
-      } else {
-        ctx.strokeStyle = 'rgba(236, 72, 153, 0.4)';
-        ctx.lineWidth = 1.5 / state.camera.zoom;
+        // Line linking back to first vertex to preview closing
+        previewPts.push(new THREE.Vector3(state.customVertices[0].x, state.customVertices[0].y, 0.025));
       }
-      ctx.stroke();
     }
 
-    // Draw custom points
+    if (previewPts.length >= 2) {
+      const previewGeom = new THREE.BufferGeometry().setFromPoints(previewPts);
+      const previewMat = new THREE.LineBasicMaterial({
+        color: 0xdb2777, // Glowing Magenta
+        linewidth: 1.5
+      });
+      const previewLine = new THREE.Line(previewGeom, previewMat);
+      meshesGroup.add(previewLine);
+    }
+
+    // Custom points spheres
+    const customSphGeom = new THREE.SphereGeometry(3.5, 12, 12);
     for (let i = 0; i < state.customVertices.length; i++) {
       const v = state.customVertices[i];
-      ctx.beginPath();
-      
-      // If drawing, make first vertex slightly larger and styled differently when hoverable for closure
       const isFirst = i === 0 && state.customVertices.length >= 3;
-      let isHoveringFirst = false;
+      let isNearFirst = false;
       if (isFirst && state.mouseWorldPos) {
-        const screenMouse = worldToScreen(state.mouseWorldPos);
-        const screenFirst = worldToScreen(v);
-        isHoveringFirst = screenMouse.dist(screenFirst) < 12;
+        const d = Math.sqrt((v.x - state.mouseWorldPos.x)**2 + (v.y - state.mouseWorldPos.y)**2);
+        isNearFirst = d < 12; // 12 world units closure threshold
       }
-      
-      const rad = (isHoveringFirst ? 7 : (isFirst ? 5.5 : 4)) / state.camera.zoom;
-      ctx.arc(v.x, v.y, rad, 0, Math.PI * 2);
-      ctx.fillStyle = isHoveringFirst ? '#10b981' : (isFirst ? '#6366f1' : '#ec4899');
-      ctx.shadowColor = isHoveringFirst ? 'rgba(16, 185, 129, 0.8)' : (isFirst ? 'rgba(99, 102, 241, 0.8)' : 'rgba(236, 72, 153, 0.6)');
-      ctx.shadowBlur = (isHoveringFirst ? 12 : 6) / state.camera.zoom;
-      ctx.fill();
-      
-      if (isFirst) {
-        ctx.beginPath();
-        ctx.arc(v.x, v.y, (isHoveringFirst ? 11 : 9) / state.camera.zoom, 0, Math.PI * 2);
-        ctx.strokeStyle = isHoveringFirst ? 'rgba(16, 185, 129, 0.4)' : 'rgba(99, 102, 241, 0.4)';
-        ctx.lineWidth = 1.5 / state.camera.zoom;
-        ctx.stroke();
-      }
+
+      const customSphMat = new THREE.MeshBasicMaterial({
+        color: isNearFirst ? 0x10b981 : (isFirst ? 0x4f46e5 : 0xdb2777)
+      });
+      const customSphMesh = new THREE.Mesh(customSphGeom, customSphMat);
+      customSphMesh.position.set(v.x, v.y, 0.03);
+      meshesGroup.add(customSphMesh);
     }
-    ctx.shadowBlur = 0; // Reset shadow
   }
 
   // 4. Draw Medial Axis Skeleton
   if (state.showSkeleton && state.polygon.length >= 3) {
     const pts = state.skeletonData.regularPoints;
-    
+
     if (state.simplifySkeleton) {
-      // Draw simplified skeleton: straight, high-contrast, glowing red/pink branches directly between junctions & ends
-      ctx.shadowColor = 'rgba(244, 63, 94, 0.6)';
-      ctx.shadowBlur = 10 / state.camera.zoom;
-      ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 3.5 / state.camera.zoom;
-      ctx.setLineDash([]);
-      
-      // If pruning is active, filter out any segments that connect to an endPoint (leaf node)
+      // Render Simplified MST straight branches as elegant thick glowing lines
       const segmentsToDraw = state.pruneBranches
         ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
         : state.skeletonData.simplifiedSegments;
 
+      const simplifiedLineMat = new THREE.LineBasicMaterial({
+        color: 0xdb2777, // Vibrant electric magenta
+        linewidth: 3.5
+      });
+
       for (const seg of segmentsToDraw) {
-        ctx.beginPath();
-        ctx.moveTo(seg.start.x, seg.start.y);
-        ctx.lineTo(seg.end.x, seg.end.y);
-        ctx.stroke();
+        const linePts = [
+          new THREE.Vector3(seg.start.x, seg.start.y, 0.035),
+          new THREE.Vector3(seg.end.x, seg.end.y, 0.035)
+        ];
+        const geom = new THREE.BufferGeometry().setFromPoints(linePts);
+        const line = new THREE.Line(geom, simplifiedLineMat);
+        meshesGroup.add(line);
       }
-      ctx.shadowBlur = 0;
     } else {
-      // Draw default curved skeleton
+      // Render Default curved skeleton lines
       const samples = state.samplesPerEdge;
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
-      ctx.lineWidth = 1.5 / state.camera.zoom;
-      ctx.setLineDash([]);
-      
+      const curveMat = new THREE.LineBasicMaterial({
+        color: 0x0ea5e9, // Sky Blue
+        transparent: true,
+        opacity: 0.65,
+        linewidth: 1.5
+      });
+
       for (let i = 0; i < state.polygon.length; i++) {
-        ctx.beginPath();
-        let hasStart = false;
+        const pointsVec3 = [];
         for (let j = 0; j < samples; j++) {
           const idx = i * samples + j;
           if (pts[idx]) {
-            if (!hasStart) {
-              ctx.moveTo(pts[idx].x, pts[idx].y);
-              hasStart = true;
-            } else {
-              ctx.lineTo(pts[idx].x, pts[idx].y);
-            }
+            pointsVec3.push(new THREE.Vector3(pts[idx].x, pts[idx].y, 0.025));
           }
         }
-        ctx.stroke();
+        if (pointsVec3.length >= 2) {
+          const curveGeom = new THREE.BufferGeometry().setFromPoints(pointsVec3);
+          const line = new THREE.Line(curveGeom, curveMat);
+          meshesGroup.add(line);
+        }
       }
 
-      // Draw regular skeleton points as small glowing cyan beads
+      // Small cyan 3D beads along standard curves
+      const regularBeadGeom = new THREE.SphereGeometry(1.6, 8, 8);
+      const regularBeadMat = new THREE.MeshBasicMaterial({ color: 0x0ea5e9 });
       for (const p of pts) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 1.8 / state.camera.zoom, 0, Math.PI * 2);
-        ctx.fillStyle = '#22d3ee';
-        ctx.fill();
+        const bead = new THREE.Mesh(regularBeadGeom, regularBeadMat);
+        bead.position.set(p.x, p.y, 0.03);
+        meshesGroup.add(bead);
       }
     }
 
-    // Draw isolated Junction/End points as larger hot-pink indicators
-    // If simplified, draw the merged centroid nodes instead of the raw overlapping junction points
+    // Draw valence 3+ Junction/End node spheres
     let nodesToDraw = state.simplifySkeleton 
       ? state.skeletonData.simplifiedNodes 
       : state.skeletonData.junctionPoints;
 
-    // If pruning is active, hide the convex boundary end points (leaves)
     if (state.pruneBranches) {
       nodesToDraw = nodesToDraw.filter(p => !p.isEndPoint);
     }
 
     for (const jp of nodesToDraw) {
-      ctx.beginPath();
-      ctx.arc(jp.x, jp.y, (jp.isEndPoint ? 4 : 5) / state.camera.zoom, 0, Math.PI * 2);
-      ctx.fillStyle = jp.isEndPoint ? '#f43f5e' : '#ec4899';
-      ctx.shadowColor = jp.isEndPoint ? 'rgba(244, 63, 94, 0.8)' : 'rgba(236, 72, 153, 0.8)';
-      ctx.shadowBlur = 10 / state.camera.zoom;
-      ctx.fill();
+      const rad = jp.isEndPoint ? 4.2 : 5.5;
+      const nodeGeom = new THREE.SphereGeometry(rad, 16, 16);
+      const nodeMat = new THREE.MeshStandardMaterial({
+        color: jp.isEndPoint ? 0xdb2777 : 0xec4899,
+        emissive: jp.isEndPoint ? 0x831843 : 0x9d174d,
+        emissiveIntensity: 0.45,
+        roughness: 0.15,
+        metalness: 0.1
+      });
+      const nodeMesh = new THREE.Mesh(nodeGeom, nodeMat);
+      nodeMesh.position.set(jp.x, jp.y, 0.035);
+      meshesGroup.add(nodeMesh);
 
-      // Add concentric outer ring
-      ctx.beginPath();
-      ctx.arc(jp.x, jp.y, (jp.isEndPoint ? 7 : 9) / state.camera.zoom, 0, Math.PI * 2);
-      ctx.strokeStyle = jp.isEndPoint ? 'rgba(244, 63, 94, 0.3)' : 'rgba(236, 72, 153, 0.3)';
-      ctx.lineWidth = 1 / state.camera.zoom;
-      ctx.stroke();
+      // Cyber concentric flat ring helper on floor plane around nodes
+      const ringGeom = new THREE.RingGeometry(rad * 1.5, rad * 1.8, 32);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: jp.isEndPoint ? 0xdb2777 : 0xec4899,
+        transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide
+      });
+      const ringMesh = new THREE.Mesh(ringGeom, ringMat);
+      ringMesh.position.set(jp.x, jp.y, 0.035);
+      meshesGroup.add(ringMesh);
     }
-    ctx.shadowBlur = 0; // reset
 
-    // C2. Draw Structural Ribs if active
-    if (state.showSkeleton && state.showRibs) {
+    // Render Structural Ribs dropping columns to boundary
+    if (state.showRibs) {
       const segmentsToDivide = state.pruneBranches
         ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
         : state.skeletonData.simplifiedSegments;
 
-      ctx.shadowBlur = 0;
+      const beadGeom = new THREE.SphereGeometry(2.4, 8, 8);
+      const beadMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White spine division beads
 
+      const ribMat = new THREE.LineBasicMaterial({
+        color: 0xdb2777, // Vibrant pink dashed vector lines
+        transparent: true,
+        opacity: 0.65
+      });
+
+      const contactGeom = new THREE.SphereGeometry(2.2, 8, 8);
+      const contactMat = new THREE.MeshBasicMaterial({ color: 0xdb2777 });
+
+      // Draw segment division ribs
       for (const seg of segmentsToDivide) {
         const startPt = seg.start;
         const endPt = seg.end;
         const vec = endPt.sub(startPt);
         const len = vec.length();
-
-        // Calculate the number of divisions dynamically based on segment length and target spacing
         const N = Math.max(1, Math.round(len / state.ribSpacing));
 
         for (let k = 1; k < N; k++) {
           const t = k / N;
           const D_k = startPt.add(vec.scale(t));
 
-          // Draw division point on the spine
-          ctx.beginPath();
-          ctx.arc(D_k.x, D_k.y, 3 / state.camera.zoom, 0, Math.PI * 2);
-          ctx.fillStyle = '#ffffff';
-          ctx.fill();
+          // Sphere bead on spine
+          const bead = new THREE.Mesh(beadGeom, beadMat);
+          bead.position.set(D_k.x, D_k.y, 0.038);
+          meshesGroup.add(bead);
 
-          // Find all closest points on all segments to D_k
+          // Find boundary contacts
           const candidates = [];
           for (let i = 0; i < state.polygon.length; i++) {
             const v1 = state.polygon[i];
@@ -506,48 +675,38 @@ function draw() {
               vector: cp.sub(D_k).normalize()
             });
           }
-
-          // Sort candidates by distance to find the closest points
           candidates.sort((a, b) => a.dist - b.dist);
 
           const closest1 = candidates[0];
           let closest2 = null;
-
-          // Find the closest opposing boundary point (dot product < 0.5, i.e., angle > 60 degrees)
           for (let i = 1; i < candidates.length; i++) {
             const cand = candidates[i];
-            const dot = closest1.vector.dot(cand.vector);
-            if (dot < 0.5) {
+            if (closest1.vector.dot(cand.vector) < 0.5) {
               closest2 = cand;
               break;
             }
           }
 
           const ribsToDraw = [closest1];
-          if (closest2) {
-            ribsToDraw.push(closest2);
-          }
+          if (closest2) ribsToDraw.push(closest2);
 
           for (const rib of ribsToDraw) {
-            // Draw structural rib line to boundary
-            ctx.beginPath();
-            ctx.moveTo(D_k.x, D_k.y);
-            ctx.lineTo(rib.point.x, rib.point.y);
-            ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)'; // Hot-pink red ribs
-            ctx.lineWidth = 1.5 / state.camera.zoom;
-            ctx.setLineDash([2 / state.camera.zoom, 2 / state.camera.zoom]);
-            ctx.stroke();
+            const rPts = [
+              new THREE.Vector3(D_k.x, D_k.y, 0.038),
+              new THREE.Vector3(rib.point.x, rib.point.y, 0.038)
+            ];
+            const rGeom = new THREE.BufferGeometry().setFromPoints(rPts);
+            const rLine = new THREE.Line(rGeom, ribMat);
+            meshesGroup.add(rLine);
 
-            // Draw contact point on boundary
-            ctx.beginPath();
-            ctx.arc(rib.point.x, rib.point.y, 3 / state.camera.zoom, 0, Math.PI * 2);
-            ctx.fillStyle = '#f43f5e';
-            ctx.fill();
+            const contactMesh = new THREE.Mesh(contactGeom, contactMat);
+            contactMesh.position.set(rib.point.x, rib.point.y, 0.038);
+            meshesGroup.add(contactMesh);
           }
         }
       }
 
-      // Draw ribs for active internal nodes (junctions)
+      // Draw active junction nodes 3-directional ribs
       const activeInternalNodes = new Set();
       for (const seg of segmentsToDivide) {
         if (!seg.start.isEndPoint) activeInternalNodes.add(seg.start);
@@ -555,7 +714,6 @@ function draw() {
       }
 
       for (const node of activeInternalNodes) {
-        // Find all closest points on all segments to the node
         const candidates = [];
         for (let i = 0; i < state.polygon.length; i++) {
           const v1 = state.polygon[i];
@@ -568,15 +726,12 @@ function draw() {
             vector: cp.sub(node).normalize()
           });
         }
-
-        // Sort candidates by distance
         candidates.sort((a, b) => a.dist - b.dist);
 
         const closest1 = candidates[0];
         let closest2 = null;
         let closest3 = null;
 
-        // Find the second closest point in a different direction (dot product < 0.5)
         for (let i = 1; i < candidates.length; i++) {
           const cand = candidates[i];
           if (closest1.vector.dot(cand.vector) < 0.5) {
@@ -585,7 +740,6 @@ function draw() {
           }
         }
 
-        // Find the third closest point in a different direction (dot product < 0.5 with both)
         if (closest2) {
           for (let i = 1; i < candidates.length; i++) {
             const cand = candidates[i];
@@ -602,136 +756,137 @@ function draw() {
         if (closest3) ribsToDraw.push(closest3);
 
         for (const rib of ribsToDraw) {
-          // Draw structural rib line to boundary
-          ctx.beginPath();
-          ctx.moveTo(node.x, node.y);
-          ctx.lineTo(rib.point.x, rib.point.y);
-          ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)'; // Hot-pink red ribs
-          ctx.lineWidth = 1.5 / state.camera.zoom;
-          ctx.setLineDash([2 / state.camera.zoom, 2 / state.camera.zoom]);
-          ctx.stroke();
+          const rPts = [
+            new THREE.Vector3(node.x, node.y, 0.038),
+            new THREE.Vector3(rib.point.x, rib.point.y, 0.038)
+          ];
+          const rGeom = new THREE.BufferGeometry().setFromPoints(rPts);
+          const rLine = new THREE.Line(rGeom, ribMat);
+          meshesGroup.add(rLine);
 
-          // Draw contact point on boundary
-          ctx.beginPath();
-          ctx.arc(rib.point.x, rib.point.y, 3 / state.camera.zoom, 0, Math.PI * 2);
-          ctx.fillStyle = '#f43f5e';
-          ctx.fill();
+          const contactMesh = new THREE.Mesh(contactGeom, contactMat);
+          contactMesh.position.set(rib.point.x, rib.point.y, 0.038);
+          meshesGroup.add(contactMesh);
         }
       }
     }
   }
 
-  // 5. Draw Interactive Inscribed Circumcircle & Governors
+  // 5. Interactive Inscribed Disc & Governorstangents
   if (state.hoverCircle && state.hoveredMedialPoint && state.polygon.length >= 3) {
     const hp = state.hoveredMedialPoint;
     const rad = hp.radius;
 
-    // Draw Inscribed Circle
-    ctx.beginPath();
-    ctx.arc(hp.x, hp.y, rad, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(6, 182, 212, 0.85)';
-    ctx.lineWidth = 2.0 / state.camera.zoom;
-    ctx.setLineDash([3 / state.camera.zoom, 3 / state.camera.zoom]);
-    ctx.stroke();
+    // Outer flat ring outline
+    const ringGeom = new THREE.RingGeometry(rad - 1, rad + 1, 64);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x0ea5e9, // Sky Blue
+      transparent: true,
+      opacity: 0.82,
+      side: THREE.DoubleSide
+    });
+    const ring = new THREE.Mesh(ringGeom, ringMat);
+    ring.position.set(hp.x, hp.y, 0.045);
+    meshesGroup.add(ring);
 
-    // Subtle center-glow inside circumcircle
-    const circleGrad = ctx.createRadialGradient(hp.x, hp.y, 0, hp.x, hp.y, rad);
-    circleGrad.addColorStop(0, 'rgba(6, 182, 212, 0.08)');
-    circleGrad.addColorStop(1, 'rgba(6, 182, 212, 0.01)');
-    ctx.fillStyle = circleGrad;
-    ctx.fill();
+    // Soft colored transparent interior glow disc
+    const discGeom = new THREE.CircleGeometry(rad, 64);
+    const discMat = new THREE.MeshBasicMaterial({
+      color: 0x0ea5e9,
+      transparent: true,
+      opacity: 0.05,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const disc = new THREE.Mesh(discGeom, discMat);
+    disc.position.set(hp.x, hp.y, 0.04);
+    meshesGroup.add(disc);
 
-    // Highlight Center Point
-    ctx.beginPath();
-    ctx.arc(hp.x, hp.y, 4 / state.camera.zoom, 0, Math.PI * 2);
-    ctx.fillStyle = '#ffffff';
-    ctx.shadowColor = '#06b6d4';
-    ctx.shadowBlur = 8 / state.camera.zoom;
-    ctx.fill();
-    ctx.shadowBlur = 0;
+    // Glowing core center sphere
+    const centerGeom = new THREE.SphereGeometry(3.6, 8, 8);
+    const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const centerMesh = new THREE.Mesh(centerGeom, centerMat);
+    centerMesh.position.set(hp.x, hp.y, 0.048);
+    meshesGroup.add(centerMesh);
 
-    // Draw Governors (Tangency vectors)
+    // Governors tangency line indicators
     if (state.showGovernors) {
+      const govLineMat = new THREE.LineBasicMaterial({
+        color: 0xdb2777, // Vibrant pink
+        linewidth: 1.5
+      });
+      const govSphGeom = new THREE.SphereGeometry(2.5, 8, 8);
+      const govSphMat = new THREE.MeshBasicMaterial({ color: 0xdb2777 });
+
       for (let i = 0; i < state.polygon.length; i++) {
         const v1 = state.polygon[i];
         const v2 = state.polygon[(i + 1) % state.polygon.length];
         const cp = closestPointOnSegment(hp, v1, v2);
-        
-        // If it is a governor (distance matches radius with tolerance)
-        if (Math.abs(hp.dist(cp) - rad) < 0.2) {
-          ctx.beginPath();
-          ctx.moveTo(hp.x, hp.y);
-          ctx.lineTo(cp.x, cp.y);
-          ctx.strokeStyle = '#f43f5e'; // Pinkish-red governor vector
-          ctx.lineWidth = 1.5 / state.camera.zoom;
-          ctx.setLineDash([2 / state.camera.zoom, 2 / state.camera.zoom]);
-          ctx.stroke();
 
-          // Highlight contact point
-          ctx.beginPath();
-          ctx.arc(cp.x, cp.y, 4.5 / state.camera.zoom, 0, Math.PI * 2);
-          ctx.fillStyle = '#f43f5e';
-          ctx.shadowBlur = 6 / state.camera.zoom;
-          ctx.shadowColor = 'rgba(244, 63, 94, 0.6)';
-          ctx.fill();
-          ctx.shadowBlur = 0;
+        if (Math.abs(hp.dist(cp) - rad) < 0.2) {
+          const govPts = [
+            new THREE.Vector3(hp.x, hp.y, 0.046),
+            new THREE.Vector3(cp.x, cp.y, 0.046)
+          ];
+          const govGeom = new THREE.BufferGeometry().setFromPoints(govPts);
+          const govLine = new THREE.Line(govGeom, govLineMat);
+          meshesGroup.add(govLine);
+
+          const govMesh = new THREE.Mesh(govSphGeom, govSphMat);
+          govMesh.position.set(cp.x, cp.y, 0.046);
+          meshesGroup.add(govMesh);
         }
       }
     }
   }
 
-  // 6. Draw Polygon Vertices (interactive handles)
+  // 6. Interactive Polygon Vertices Drag Handles (Chrome Indigo Spheres)
   if (!state.isDrawing && state.polygon.length > 0) {
+    const handleGeom = new THREE.SphereGeometry(5.2, 16, 16);
+    const coreGeom = new THREE.SphereGeometry(1.8, 8, 8);
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
     for (let i = 0; i < state.polygon.length; i++) {
       const v = state.polygon[i];
-      ctx.beginPath();
-      ctx.arc(v.x, v.y, 6 / state.camera.zoom, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(18, 20, 28, 0.8)';
-      ctx.strokeStyle = '#6366f1';
-      ctx.lineWidth = 2.0 / state.camera.zoom;
-      ctx.fill();
-      ctx.stroke();
+      const handleMat = new THREE.MeshStandardMaterial({
+        color: 0x4f46e5, // Royal Indigo
+        roughness: 0.15,
+        metalness: 0.2
+      });
 
-      // Little center-core in dot
-      ctx.beginPath();
-      ctx.arc(v.x, v.y, 2 / state.camera.zoom, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
+      const handle = new THREE.Mesh(handleGeom, handleMat);
+      handle.position.set(v.x, v.y, 0.03);
+      handle.userData = { isHandle: true, index: i }; // Raycast tag
+      meshesGroup.add(handle);
+
+      // Embedded white core core
+      const core = new THREE.Mesh(coreGeom, coreMat);
+      core.position.set(v.x, v.y, 0.038);
+      meshesGroup.add(core);
     }
-  }
-
-  ctx.restore();
-}
-
-// Background Grid Drawer in World Space
-function drawGrid() {
-  const gridSize = 40;
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.015)';
-  ctx.lineWidth = 0.8 / state.camera.zoom;
-  ctx.setLineDash([]);
-  
-  const extent = 5000;
-  
-  // Vertical lines
-  for (let x = -extent; x <= extent; x += gridSize) {
-    ctx.beginPath();
-    ctx.moveTo(x, -extent);
-    ctx.lineTo(x, extent);
-    ctx.stroke();
-  }
-  
-  // Horizontal lines
-  for (let y = -extent; y <= extent; y += gridSize) {
-    ctx.beginPath();
-    ctx.moveTo(-extent, y);
-    ctx.lineTo(extent, y);
-    ctx.stroke();
   }
 }
 
 // Setup Event Listeners for UI
 function setupEventListeners() {
-  // Preset Clicks
+  // Sidebar minimize button
+  const btnMinimizeSidebar = document.getElementById('btn-minimize-sidebar');
+  const controlSidebar = document.getElementById('control-sidebar');
+  if (btnMinimizeSidebar && controlSidebar) {
+    btnMinimizeSidebar.addEventListener('click', () => {
+      controlSidebar.classList.toggle('collapsed');
+      const span = btnMinimizeSidebar.querySelector('span');
+      if (span) {
+        span.innerText = controlSidebar.classList.contains('collapsed') ? '▲' : '▼';
+      }
+    });
+  }
+
+  // Camera View controls
+  document.getElementById('btn-view-perspective').addEventListener('click', () => setCameraView('perspective'));
+  document.getElementById('btn-view-top').addEventListener('click', () => setCameraView('top'));
+
+  // Preset Card selections
   const cards = document.querySelectorAll('.preset-card');
   cards.forEach(card => {
     card.addEventListener('click', () => {
@@ -764,7 +919,7 @@ function setupEventListeners() {
   // Display Overlays Toggles
   document.getElementById('chk-show-skeleton').addEventListener('change', (e) => {
     state.showSkeleton = e.target.checked;
-    requestAnimationFrame(draw);
+    draw();
   });
   document.getElementById('chk-simplify-skeleton').addEventListener('change', (e) => {
     state.simplifySkeleton = e.target.checked;
@@ -773,7 +928,6 @@ function setupEventListeners() {
   document.getElementById('chk-prune-branches').addEventListener('change', (e) => {
     state.pruneBranches = e.target.checked;
     if (state.pruneBranches) {
-      // Auto-enable simplify skeleton as it relies on the MST nodes
       state.simplifySkeleton = true;
       const chkSimplify = document.getElementById('chk-simplify-skeleton');
       if (chkSimplify) chkSimplify.checked = true;
@@ -783,7 +937,6 @@ function setupEventListeners() {
   document.getElementById('chk-show-ribs').addEventListener('change', (e) => {
     state.showRibs = e.target.checked;
     if (state.showRibs) {
-      // Auto-enable simplify skeleton as ribs are constructed on MST segments
       state.simplifySkeleton = true;
       const chkSimplify = document.getElementById('chk-simplify-skeleton');
       if (chkSimplify) chkSimplify.checked = true;
@@ -797,10 +950,10 @@ function setupEventListeners() {
   sRibs.addEventListener('input', (e) => {
     state.ribSpacing = parseInt(e.target.value);
     valRibs.innerText = `${state.ribSpacing}px`;
-    requestAnimationFrame(draw);
+    draw();
   });
   
-  // Slider - Merge distance for vertices
+  // Slider - Merge distance
   const sMerge = document.getElementById('slider-merge');
   const valMerge = document.getElementById('val-merge');
   sMerge.addEventListener('input', (e) => {
@@ -811,16 +964,16 @@ function setupEventListeners() {
 
   document.getElementById('chk-show-voronoi').addEventListener('change', (e) => {
     state.showVoronoi = e.target.checked;
-    requestAnimationFrame(draw);
+    draw();
   });
   document.getElementById('chk-hover-circle').addEventListener('change', (e) => {
     state.hoverCircle = e.target.checked;
     if (!state.hoverCircle) state.hoveredMedialPoint = null;
-    requestAnimationFrame(draw);
+    draw();
   });
   document.getElementById('chk-show-governors').addEventListener('change', (e) => {
     state.showGovernors = e.target.checked;
-    requestAnimationFrame(draw);
+    draw();
   });
 
   // Draw Custom button
@@ -834,7 +987,6 @@ function setupEventListeners() {
     state.polygon = [];
     state.skeletonData = { regularPoints: [], junctionPoints: [] };
     
-    // UI states
     btnDrawCustom.style.display = 'none';
     btnClearCustom.style.display = 'inline-flex';
     drawIndicator.style.display = 'flex';
@@ -843,7 +995,7 @@ function setupEventListeners() {
     document.getElementById('card-custom').style.display = 'flex';
     document.getElementById('card-custom').classList.add('active');
 
-    requestAnimationFrame(draw);
+    draw();
   });
 
   btnClearCustom.addEventListener('click', () => {
@@ -851,15 +1003,14 @@ function setupEventListeners() {
     state.polygon = [];
     state.isDrawing = true;
     state.skeletonData = { regularPoints: [], junctionPoints: [] };
-    requestAnimationFrame(draw);
+    draw();
   });
 
-  // Interactive mouse canvas dragging/drawing
+  // Register viewport listeners on Canvas
   canvas.addEventListener('mousedown', handleMouseDown);
   canvas.addEventListener('mousemove', handleMouseMove);
   canvas.addEventListener('mouseup', handleMouseUp);
   canvas.addEventListener('mouseleave', handleMouseLeave);
-  canvas.addEventListener('wheel', handleWheel, { passive: false });
   canvas.addEventListener('contextmenu', e => e.preventDefault());
 
   const btnResetView = document.getElementById('btn-reset-view');
@@ -868,34 +1019,52 @@ function setupEventListeners() {
   }
 }
 
-// Mouse Event Handlers
-function getMousePos(e) {
+// Mouse Event Handlers using 3D Raycasting
+function getIntersectionPoint(e) {
   const rect = canvas.getBoundingClientRect();
-  return new Vector2D(
-    e.clientX - rect.left,
-    e.clientY - rect.top
-  );
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, cameraActive);
+  const target = new THREE.Vector3();
+  raycaster.ray.intersectPlane(planeZ, target);
+  return target;
 }
 
 function handleMouseDown(e) {
-  // Right-click or Middle-click always pans in all modes
-  if (e.button === 1 || e.button === 2) {
-    state.camera.isPanning = true;
-    state.camera.panStart = new Vector2D(e.clientX, e.clientY);
-    e.preventDefault();
-    return;
-  }
+  // Let OrbitControls handle Middle-click (dolly) and Right-click (pan) automatically
+  if (e.button === 1 || e.button === 2) return;
 
   if (e.button === 0) {
-    const pos = getMousePos(e);
-    const worldPos = screenToWorld(pos);
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Check if clicking near any vertex handle sphere
+    raycaster.setFromCamera(mouse, cameraActive);
+    const intersects = raycaster.intersectObjects(meshesGroup.children);
+    let clickedHandle = false;
+
+    for (const hit of intersects) {
+      if (hit.object.userData && hit.object.userData.isHandle) {
+        state.draggedVertexIdx = hit.object.userData.index;
+        controls.enabled = false; // Disable camera orbiting while dragging!
+        document.getElementById('status-dot').classList.add('loading');
+        document.getElementById('status-text').innerText = `Dragging vertex ${state.draggedVertexIdx}...`;
+        clickedHandle = true;
+        break;
+      }
+    }
 
     if (state.isDrawing) {
+      const target = getIntersectionPoint(e);
+      const worldPos = new Vector2D(target.x, target.y);
+
       // If clicking near the first vertex and we have at least 3 points, close it
       if (state.customVertices.length >= 3) {
         const screenFirst = worldToScreen(state.customVertices[0]);
-        const dist = pos.dist(screenFirst);
-        if (dist < 12) {
+        const screenPos = new Vector2D(e.clientX - rect.left, e.clientY - rect.top);
+        if (screenPos.dist(screenFirst) < 12) {
           state.polygon = [...state.customVertices];
           state.isDrawing = false;
           
@@ -904,76 +1073,48 @@ function handleMouseDown(e) {
           document.getElementById('drawing-indicator').style.display = 'none';
           
           recomputeMAT();
+          resetCameraView();
           return;
         }
       }
       state.customVertices.push(worldPos);
-      requestAnimationFrame(draw);
-    } else {
-      // Check if clicking near any vertex of the polygon to drag it
-      let clickedHandle = false;
-      for (let i = 0; i < state.polygon.length; i++) {
-        const v = state.polygon[i];
-        const screenV = worldToScreen(v);
-        if (pos.dist(screenV) < 12) {
-          state.draggedVertexIdx = i;
-          document.getElementById('status-dot').classList.add('loading');
-          document.getElementById('status-text').innerText = `Dragging vertex ${i}...`;
-          clickedHandle = true;
-          break;
-        }
-      }
-      
-      // If not clicking a vertex, Left-click on empty space pans!
-      if (!clickedHandle) {
-        state.camera.isPanning = true;
-        state.camera.panStart = new Vector2D(e.clientX, e.clientY);
-      }
+      draw();
     }
   }
 }
 
 function handleMouseMove(e) {
-  const pos = getMousePos(e);
-  const worldPos = screenToWorld(pos);
+  const target = getIntersectionPoint(e);
+  const worldPos = new Vector2D(target.x, target.y);
   state.mouseWorldPos = worldPos;
 
-  if (state.camera.isPanning) {
-    const dx = e.clientX - state.camera.panStart.x;
-    const dy = e.clientY - state.camera.panStart.y;
-    state.camera.x += dx;
-    state.camera.y += dy;
-    state.camera.panStart = new Vector2D(e.clientX, e.clientY);
-    updateCameraHUD();
-    requestAnimationFrame(draw);
-  }
-
   if (state.draggedVertexIdx !== -1) {
-    // Update dragged vertex position (in world coordinates)
+    // Drag handle: Update vertex position in world coordinates
     state.polygon[state.draggedVertexIdx] = worldPos;
     recomputeMAT();
   } else if (state.isDrawing) {
-    requestAnimationFrame(draw);
-  } else if (state.hoverCircle && state.polygon.length >= 3 && !state.camera.isPanning) {
-    // Hover logic: Find closest medial point to mouse (measured in screen space distance)
-    let bestPoint = null;
-    let minDist = 20; // 20px active hover range in screen space
+    draw();
+  } else if (state.hoverCircle && state.polygon.length >= 3 && !controls.state === -1) {
+    // Hover logic: Find closest medial point (measured in screen space distance)
+    const rect = canvas.getBoundingClientRect();
+    const screenMouse = new Vector2D(e.clientX - rect.left, e.clientY - rect.top);
 
-    // Check regular skeleton points
+    let bestPoint = null;
+    let minDist = 20; // 20px active hover range
+
     for (const p of state.skeletonData.regularPoints) {
       const screenP = worldToScreen(p);
-      const dist = pos.dist(screenP);
+      const dist = screenMouse.dist(screenP);
       if (dist < minDist) {
         minDist = dist;
         bestPoint = p;
       }
     }
 
-    // Check junction points
     for (const jp of state.skeletonData.junctionPoints) {
-      if (jp.isEndPoint) continue; // skip end points at polygon boundary (radius=0)
+      if (jp.isEndPoint) continue;
       const screenJP = worldToScreen(jp);
-      const dist = pos.dist(screenJP);
+      const dist = screenMouse.dist(screenJP);
       if (dist < minDist) {
         minDist = dist;
         bestPoint = jp;
@@ -982,54 +1123,46 @@ function handleMouseMove(e) {
 
     if (bestPoint !== state.hoveredMedialPoint) {
       state.hoveredMedialPoint = bestPoint;
-      requestAnimationFrame(draw);
+      draw();
     }
   }
 }
 
-function handleMouseUp(e) {
-  state.camera.isPanning = false;
+function handleMouseUp() {
   if (state.draggedVertexIdx !== -1) {
     state.draggedVertexIdx = -1;
+    controls.enabled = true; // Re-enable camera rotation
     document.getElementById('status-dot').classList.remove('loading');
     recomputeMAT();
   }
 }
 
 function handleMouseLeave() {
-  state.camera.isPanning = false;
   state.mouseWorldPos = null;
   state.hoveredMedialPoint = null;
   if (state.draggedVertexIdx !== -1) {
     state.draggedVertexIdx = -1;
+    controls.enabled = true;
     document.getElementById('status-dot').classList.remove('loading');
     recomputeMAT();
   }
-  requestAnimationFrame(draw);
+  draw();
 }
 
-function handleWheel(e) {
-  e.preventDefault();
-  const mousePos = getMousePos(e);
-  const oldZoom = state.camera.zoom;
-  const zoomFactor = 1.1;
-  let newZoom = e.deltaY < 0 ? oldZoom * zoomFactor : oldZoom / zoomFactor;
+// Main high-performance render frame loop
+function animate() {
+  requestAnimationFrame(animate);
   
-  // Constrain zoom levels between 0.2x and 10.0x
-  newZoom = Math.min(10.0, Math.max(0.2, newZoom));
+  // Update controls with smooth damping
+  controls.update();
   
-  // Center zoom dynamically at current cursor position
-  state.camera.x = mousePos.x - (mousePos.x - state.camera.x) * (newZoom / oldZoom);
-  state.camera.y = mousePos.y - (mousePos.y - state.camera.y) * (newZoom / oldZoom);
-  state.camera.zoom = newZoom;
-  
-  updateCameraHUD();
-  requestAnimationFrame(draw);
+  // Render frame
+  renderer.render(scene, cameraActive);
 }
 
 // Initialise App
 window.addEventListener('load', () => {
-  resizeCanvas();
+  initThree();
   setupEventListeners();
-  window.addEventListener('resize', resizeCanvas);
+  loadPreset(state.activePreset);
 });

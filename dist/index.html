@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Interactive 2D Medial Axis Transform (MAT) Visualizer</title>
   <meta name="description" content="An interactive real-time visualizer for the fast sampling-based 2D Medial Axis Transform algorithm. Draw custom polygons and inspect skeleton branches, junction points, and maximal inscribed circles.">
-  <script type="module" crossorigin src="/assets/index-DGw5-his.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-Cfu31mIv.css">
+  <script type="module" crossorigin src="/assets/index-Cz00F_yi.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Ckw9pDwk.css">
 </head>
 <body>
 
@@ -40,6 +40,12 @@
       
       <!-- Floating Camera Controls HUD -->
       <div class="camera-hud" id="camera-hud">
+        <button class="btn-hud active" id="btn-view-perspective" title="Perspective View">
+          <span>🎥</span> Perspective
+        </button>
+        <button class="btn-hud" id="btn-view-top" title="Top-Down View">
+          <span>📐</span> Top View
+        </button>
         <button class="btn-hud" id="btn-reset-view" title="Reset Viewport">
           <span>🔍</span> Reset View
         </button>
@@ -50,10 +56,15 @@
     </div>
 
     <!-- HUD Control Sidebar -->
-    <aside class="control-sidebar">
+    <aside class="control-sidebar" id="control-sidebar">
       <div class="sidebar-header">
         <h2>Visualizer Dashboard</h2>
-        <span class="hud-tips-icon" style="font-size: 1rem;">⚙</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span class="hud-tips-icon" style="font-size: 1rem;">⚙</span>
+          <button class="btn-minimize" id="btn-minimize-sidebar" title="Minimize Panel">
+            <span>▼</span>
+          </button>
+        </div>
       </div>
 
       <div class="sidebar-scroll">
