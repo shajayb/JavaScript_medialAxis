@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Interactive 2D Medial Axis Transform (MAT) Visualizer</title>
   <meta name="description" content="An interactive real-time visualizer for the fast sampling-based 2D Medial Axis Transform algorithm. Draw custom polygons and inspect skeleton branches, junction points, and maximal inscribed circles.">
-  <script type="module" crossorigin src="/assets/index-D8Dg-3OV.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-BiSNlIuw.css">
+  <script type="module" crossorigin src="/assets/index-DGw5-his.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Cfu31mIv.css">
 </head>
 <body>
 
@@ -37,6 +37,16 @@
     <!-- Canvas Wrapper -->
     <div class="canvas-wrapper" id="canvas-wrapper">
       <canvas id="polygon-canvas" width="800" height="600"></canvas>
+      
+      <!-- Floating Camera Controls HUD -->
+      <div class="camera-hud" id="camera-hud">
+        <button class="btn-hud" id="btn-reset-view" title="Reset Viewport">
+          <span>🔍</span> Reset View
+        </button>
+        <div class="camera-info" id="camera-info">
+          Zoom: 1.00x
+        </div>
+      </div>
     </div>
 
     <!-- HUD Control Sidebar -->

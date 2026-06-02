@@ -518,3 +518,58 @@ input:checked + .slider-switch:before {
   box-shadow: 0 0 8px var(--pink-glow);
   animation: pulse 1.2s infinite;
 }
+
+/* Floating Camera HUD Overlay */
+.camera-hud {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.btn-hud {
+  pointer-events: auto;
+  background-color: var(--panel-bg);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 8px 16px;
+  border-radius: 30px;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: var(--card-shadow);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-hud:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent-color);
+  box-shadow: 0 0 12px var(--accent-glow);
+  transform: translateY(-1px);
+}
+
+.btn-hud:active {
+  transform: translateY(0);
+}
+
+.camera-info {
+  background: rgba(10, 11, 16, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-color);
+  color: var(--cyan-color);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: var(--font-display);
+  box-shadow: var(--card-shadow);
+}

@@ -23,12 +23,75 @@ const state = {
   hoveredMedialPoint: null,
   skeletonData: { regularPoints: [], junctionPoints: [], simplifiedSegments: [], simplifiedNodes: [], voronoiCells: [] },
   computeTime: 0,
+  camera: {
+    x: 0,
+    y: 0,
+    zoom: 1.0,
+    isPanning: false,
+    panStart: null
+  },
+  mouseWorldPos: null,
 };
 
 // Canvas Setup
 const canvas = document.getElementById('polygon-canvas');
 const ctx = canvas.getContext('2d');
 const wrapper = document.getElementById('canvas-wrapper');
+
+// Screen/World Space transformations
+function screenToWorld(screenPos) {
+  return new Vector2D(
+    (screenPos.x - state.camera.x) / state.camera.zoom,
+    (screenPos.y - state.camera.y) / state.camera.zoom
+  );
+}
+
+function worldToScreen(worldPos) {
+  return new Vector2D(
+    worldPos.x * state.camera.zoom + state.camera.x,
+    worldPos.y * state.camera.zoom + state.camera.y
+  );
+}
+
+function updateCameraHUD() {
+  const elInfo = document.getElementById('camera-info');
+  if (elInfo) {
+    elInfo.innerText = `Zoom: ${state.camera.zoom.toFixed(2)}x`;
+  }
+}
+
+function resetCameraView() {
+  if (state.polygon.length === 0) {
+    state.camera = { x: 0, y: 0, zoom: 1.0, isPanning: false, panStart: null };
+    updateCameraHUD();
+    return;
+  }
+  
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  for (const v of state.polygon) {
+    minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x);
+    minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+  }
+  
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const wSpan = maxX - minX || 1;
+  const hSpan = maxY - minY || 1;
+  
+  // Fit with 30% padding
+  const padding = 0.7;
+  const scaleX = (canvas.width * padding) / wSpan;
+  const scaleY = (canvas.height * padding) / hSpan;
+  const zoom = Math.min(2.5, Math.max(0.2, Math.min(scaleX, scaleY)));
+  
+  state.camera.zoom = zoom;
+  state.camera.x = canvas.width / 2 - cx * zoom;
+  state.camera.y = canvas.height / 2 - cy * zoom;
+  
+  updateCameraHUD();
+  requestAnimationFrame(draw);
+}
 
 // Resize canvas to match wrapper bounds or default to 800x600
 function resizeCanvas() {
@@ -119,6 +182,7 @@ function loadPreset(name) {
     document.getElementById('card-custom').style.display = 'none';
   }
   recomputeMAT();
+  resetCameraView();
 }
 
 // Compute the Medial Axis Transform using core library class
@@ -186,6 +250,9 @@ function recomputeMAT() {
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  ctx.save();
+  ctx.translate(state.camera.x, state.camera.y);
+  ctx.scale(state.camera.zoom, state.camera.zoom);
 
   // 1. Grid Background
   drawGrid();
@@ -199,14 +266,8 @@ function draw() {
     }
     ctx.closePath();
 
-    // Elegant glowing fill
-    const grad = ctx.createRadialGradient(
-      canvas.width / 2, canvas.height / 2, 50,
-      canvas.width / 2, canvas.height / 2, canvas.width / 2
-    );
-    grad.addColorStop(0, 'rgba(99, 102, 241, 0.08)');
-    grad.addColorStop(1, 'rgba(6, 182, 212, 0.02)');
-    ctx.fillStyle = grad;
+    // Elegant glowing flat fill (transparent, zooms perfectly with camera)
+    ctx.fillStyle = 'rgba(99, 102, 241, 0.05)';
     ctx.fill();
 
     // Draw Trimmed Voronoi Cells if active
@@ -237,8 +298,8 @@ function draw() {
 
           // Subtle glowing cell boundary borders
           ctx.strokeStyle = `hsla(${hue}, 80%, 60%, 0.35)`;
-          ctx.lineWidth = 1.8;
-          ctx.setLineDash([4, 2]);
+          ctx.lineWidth = 1.8 / state.camera.zoom;
+          ctx.setLineDash([4 / state.camera.zoom, 2 / state.camera.zoom]);
           ctx.stroke();
         }
       });
@@ -247,7 +308,7 @@ function draw() {
 
     // Polygon boundary border
     ctx.strokeStyle = 'rgba(99, 102, 241, 0.45)';
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2.5 / state.camera.zoom;
     ctx.setLineDash([]);
     ctx.stroke();
   }
@@ -260,18 +321,61 @@ function draw() {
       ctx.lineTo(state.customVertices[i].x, state.customVertices[i].y);
     }
     ctx.strokeStyle = '#ec4899';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 2 / state.camera.zoom;
+    ctx.setLineDash([4 / state.camera.zoom, 4 / state.camera.zoom]);
     ctx.stroke();
 
-    // Draw custom points
-    for (const v of state.customVertices) {
+    // Visual helper: dashed line to current mouse cursor in world space
+    if (state.mouseWorldPos) {
       ctx.beginPath();
-      ctx.arc(v.x, v.y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = '#ec4899';
-      ctx.shadowColor = 'rgba(236, 72, 153, 0.6)';
-      ctx.shadowBlur = 6;
+      ctx.moveTo(state.customVertices[state.customVertices.length - 1].x, state.customVertices[state.customVertices.length - 1].y);
+      ctx.lineTo(state.mouseWorldPos.x, state.mouseWorldPos.y);
+      
+      // If we have at least 3 vertices, draw a secondary dashed line to the 1st vertex to show closure helper
+      if (state.customVertices.length >= 3) {
+        // Highlight connection to closure vertex if hovered near first vertex
+        const screenMouse = worldToScreen(state.mouseWorldPos);
+        const screenFirst = worldToScreen(state.customVertices[0]);
+        const isNearFirst = screenMouse.dist(screenFirst) < 12;
+        
+        ctx.strokeStyle = isNearFirst ? '#10b981' : 'rgba(236, 72, 153, 0.4)'; // green if closing
+        ctx.lineWidth = (isNearFirst ? 2.5 : 1.5) / state.camera.zoom;
+        ctx.lineTo(state.customVertices[0].x, state.customVertices[0].y);
+      } else {
+        ctx.strokeStyle = 'rgba(236, 72, 153, 0.4)';
+        ctx.lineWidth = 1.5 / state.camera.zoom;
+      }
+      ctx.stroke();
+    }
+
+    // Draw custom points
+    for (let i = 0; i < state.customVertices.length; i++) {
+      const v = state.customVertices[i];
+      ctx.beginPath();
+      
+      // If drawing, make first vertex slightly larger and styled differently when hoverable for closure
+      const isFirst = i === 0 && state.customVertices.length >= 3;
+      let isHoveringFirst = false;
+      if (isFirst && state.mouseWorldPos) {
+        const screenMouse = worldToScreen(state.mouseWorldPos);
+        const screenFirst = worldToScreen(v);
+        isHoveringFirst = screenMouse.dist(screenFirst) < 12;
+      }
+      
+      const rad = (isHoveringFirst ? 7 : (isFirst ? 5.5 : 4)) / state.camera.zoom;
+      ctx.arc(v.x, v.y, rad, 0, Math.PI * 2);
+      ctx.fillStyle = isHoveringFirst ? '#10b981' : (isFirst ? '#6366f1' : '#ec4899');
+      ctx.shadowColor = isHoveringFirst ? 'rgba(16, 185, 129, 0.8)' : (isFirst ? 'rgba(99, 102, 241, 0.8)' : 'rgba(236, 72, 153, 0.6)');
+      ctx.shadowBlur = (isHoveringFirst ? 12 : 6) / state.camera.zoom;
       ctx.fill();
+      
+      if (isFirst) {
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, (isHoveringFirst ? 11 : 9) / state.camera.zoom, 0, Math.PI * 2);
+        ctx.strokeStyle = isHoveringFirst ? 'rgba(16, 185, 129, 0.4)' : 'rgba(99, 102, 241, 0.4)';
+        ctx.lineWidth = 1.5 / state.camera.zoom;
+        ctx.stroke();
+      }
     }
     ctx.shadowBlur = 0; // Reset shadow
   }
@@ -283,9 +387,9 @@ function draw() {
     if (state.simplifySkeleton) {
       // Draw simplified skeleton: straight, high-contrast, glowing red/pink branches directly between junctions & ends
       ctx.shadowColor = 'rgba(244, 63, 94, 0.6)';
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 10 / state.camera.zoom;
       ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 3.5;
+      ctx.lineWidth = 3.5 / state.camera.zoom;
       ctx.setLineDash([]);
       
       // If pruning is active, filter out any segments that connect to an endPoint (leaf node)
@@ -305,7 +409,7 @@ function draw() {
       const samples = state.samplesPerEdge;
       ctx.shadowBlur = 0;
       ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 / state.camera.zoom;
       ctx.setLineDash([]);
       
       for (let i = 0; i < state.polygon.length; i++) {
@@ -328,7 +432,7 @@ function draw() {
       // Draw regular skeleton points as small glowing cyan beads
       for (const p of pts) {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 1.8, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, 1.8 / state.camera.zoom, 0, Math.PI * 2);
         ctx.fillStyle = '#22d3ee';
         ctx.fill();
       }
@@ -347,17 +451,17 @@ function draw() {
 
     for (const jp of nodesToDraw) {
       ctx.beginPath();
-      ctx.arc(jp.x, jp.y, jp.isEndPoint ? 4 : 5, 0, Math.PI * 2);
+      ctx.arc(jp.x, jp.y, (jp.isEndPoint ? 4 : 5) / state.camera.zoom, 0, Math.PI * 2);
       ctx.fillStyle = jp.isEndPoint ? '#f43f5e' : '#ec4899';
       ctx.shadowColor = jp.isEndPoint ? 'rgba(244, 63, 94, 0.8)' : 'rgba(236, 72, 153, 0.8)';
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 10 / state.camera.zoom;
       ctx.fill();
 
       // Add concentric outer ring
       ctx.beginPath();
-      ctx.arc(jp.x, jp.y, jp.isEndPoint ? 7 : 9, 0, Math.PI * 2);
+      ctx.arc(jp.x, jp.y, (jp.isEndPoint ? 7 : 9) / state.camera.zoom, 0, Math.PI * 2);
       ctx.strokeStyle = jp.isEndPoint ? 'rgba(244, 63, 94, 0.3)' : 'rgba(236, 72, 153, 0.3)';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / state.camera.zoom;
       ctx.stroke();
     }
     ctx.shadowBlur = 0; // reset
@@ -385,7 +489,7 @@ function draw() {
 
           // Draw division point on the spine
           ctx.beginPath();
-          ctx.arc(D_k.x, D_k.y, 3, 0, Math.PI * 2);
+          ctx.arc(D_k.x, D_k.y, 3 / state.camera.zoom, 0, Math.PI * 2);
           ctx.fillStyle = '#ffffff';
           ctx.fill();
 
@@ -430,13 +534,13 @@ function draw() {
             ctx.moveTo(D_k.x, D_k.y);
             ctx.lineTo(rib.point.x, rib.point.y);
             ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)'; // Hot-pink red ribs
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([2, 2]);
+            ctx.lineWidth = 1.5 / state.camera.zoom;
+            ctx.setLineDash([2 / state.camera.zoom, 2 / state.camera.zoom]);
             ctx.stroke();
 
             // Draw contact point on boundary
             ctx.beginPath();
-            ctx.arc(rib.point.x, rib.point.y, 3, 0, Math.PI * 2);
+            ctx.arc(rib.point.x, rib.point.y, 3 / state.camera.zoom, 0, Math.PI * 2);
             ctx.fillStyle = '#f43f5e';
             ctx.fill();
           }
@@ -503,13 +607,13 @@ function draw() {
           ctx.moveTo(node.x, node.y);
           ctx.lineTo(rib.point.x, rib.point.y);
           ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)'; // Hot-pink red ribs
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([2, 2]);
+          ctx.lineWidth = 1.5 / state.camera.zoom;
+          ctx.setLineDash([2 / state.camera.zoom, 2 / state.camera.zoom]);
           ctx.stroke();
 
           // Draw contact point on boundary
           ctx.beginPath();
-          ctx.arc(rib.point.x, rib.point.y, 3, 0, Math.PI * 2);
+          ctx.arc(rib.point.x, rib.point.y, 3 / state.camera.zoom, 0, Math.PI * 2);
           ctx.fillStyle = '#f43f5e';
           ctx.fill();
         }
@@ -526,8 +630,8 @@ function draw() {
     ctx.beginPath();
     ctx.arc(hp.x, hp.y, rad, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(6, 182, 212, 0.85)';
-    ctx.lineWidth = 2.0;
-    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 2.0 / state.camera.zoom;
+    ctx.setLineDash([3 / state.camera.zoom, 3 / state.camera.zoom]);
     ctx.stroke();
 
     // Subtle center-glow inside circumcircle
@@ -539,10 +643,10 @@ function draw() {
 
     // Highlight Center Point
     ctx.beginPath();
-    ctx.arc(hp.x, hp.y, 4, 0, Math.PI * 2);
+    ctx.arc(hp.x, hp.y, 4 / state.camera.zoom, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.shadowColor = '#06b6d4';
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 8 / state.camera.zoom;
     ctx.fill();
     ctx.shadowBlur = 0;
 
@@ -559,15 +663,15 @@ function draw() {
           ctx.moveTo(hp.x, hp.y);
           ctx.lineTo(cp.x, cp.y);
           ctx.strokeStyle = '#f43f5e'; // Pinkish-red governor vector
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([2, 2]);
+          ctx.lineWidth = 1.5 / state.camera.zoom;
+          ctx.setLineDash([2 / state.camera.zoom, 2 / state.camera.zoom]);
           ctx.stroke();
 
           // Highlight contact point
           ctx.beginPath();
-          ctx.arc(cp.x, cp.y, 4.5, 0, Math.PI * 2);
+          ctx.arc(cp.x, cp.y, 4.5 / state.camera.zoom, 0, Math.PI * 2);
           ctx.fillStyle = '#f43f5e';
-          ctx.shadowBlur = 6;
+          ctx.shadowBlur = 6 / state.camera.zoom;
           ctx.shadowColor = 'rgba(244, 63, 94, 0.6)';
           ctx.fill();
           ctx.shadowBlur = 0;
@@ -581,41 +685,46 @@ function draw() {
     for (let i = 0; i < state.polygon.length; i++) {
       const v = state.polygon[i];
       ctx.beginPath();
-      ctx.arc(v.x, v.y, 6, 0, Math.PI * 2);
+      ctx.arc(v.x, v.y, 6 / state.camera.zoom, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(18, 20, 28, 0.8)';
       ctx.strokeStyle = '#6366f1';
-      ctx.lineWidth = 2.0;
+      ctx.lineWidth = 2.0 / state.camera.zoom;
       ctx.fill();
       ctx.stroke();
 
       // Little center-core in dot
       ctx.beginPath();
-      ctx.arc(v.x, v.y, 2, 0, Math.PI * 2);
+      ctx.arc(v.x, v.y, 2 / state.camera.zoom, 0, Math.PI * 2);
       ctx.fillStyle = '#ffffff';
       ctx.fill();
     }
   }
+
+  ctx.restore();
 }
 
-// Background Grid Drawer
+// Background Grid Drawer in World Space
 function drawGrid() {
   const gridSize = 40;
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
-  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.015)';
+  ctx.lineWidth = 0.8 / state.camera.zoom;
+  ctx.setLineDash([]);
+  
+  const extent = 5000;
   
   // Vertical lines
-  for (let x = 0; x < canvas.width; x += gridSize) {
+  for (let x = -extent; x <= extent; x += gridSize) {
     ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, canvas.height);
+    ctx.moveTo(x, -extent);
+    ctx.lineTo(x, extent);
     ctx.stroke();
   }
   
   // Horizontal lines
-  for (let y = 0; y < canvas.height; y += gridSize) {
+  for (let y = -extent; y <= extent; y += gridSize) {
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
+    ctx.moveTo(-extent, y);
+    ctx.lineTo(extent, y);
     ctx.stroke();
   }
 }
@@ -749,7 +858,14 @@ function setupEventListeners() {
   canvas.addEventListener('mousedown', handleMouseDown);
   canvas.addEventListener('mousemove', handleMouseMove);
   canvas.addEventListener('mouseup', handleMouseUp);
-  canvas.addEventListener('mouseleave', handleMouseUp);
+  canvas.addEventListener('mouseleave', handleMouseLeave);
+  canvas.addEventListener('wheel', handleWheel, { passive: false });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  const btnResetView = document.getElementById('btn-reset-view');
+  if (btnResetView) {
+    btnResetView.addEventListener('click', resetCameraView);
+  }
 }
 
 // Mouse Event Handlers
@@ -762,35 +878,56 @@ function getMousePos(e) {
 }
 
 function handleMouseDown(e) {
-  const pos = getMousePos(e);
+  // Right-click or Middle-click always pans in all modes
+  if (e.button === 1 || e.button === 2) {
+    state.camera.isPanning = true;
+    state.camera.panStart = new Vector2D(e.clientX, e.clientY);
+    e.preventDefault();
+    return;
+  }
 
-  if (state.isDrawing) {
-    // If clicking near the first vertex and we have at least 3 points, close it
-    if (state.customVertices.length >= 3) {
-      const dist = pos.dist(state.customVertices[0]);
-      if (dist < 12) {
-        state.polygon = [...state.customVertices];
-        state.isDrawing = false;
-        
-        document.getElementById('btn-draw-custom').style.display = 'inline-flex';
-        document.getElementById('btn-clear-custom').style.display = 'none';
-        document.getElementById('drawing-indicator').style.display = 'none';
-        
-        recomputeMAT();
-        return;
+  if (e.button === 0) {
+    const pos = getMousePos(e);
+    const worldPos = screenToWorld(pos);
+
+    if (state.isDrawing) {
+      // If clicking near the first vertex and we have at least 3 points, close it
+      if (state.customVertices.length >= 3) {
+        const screenFirst = worldToScreen(state.customVertices[0]);
+        const dist = pos.dist(screenFirst);
+        if (dist < 12) {
+          state.polygon = [...state.customVertices];
+          state.isDrawing = false;
+          
+          document.getElementById('btn-draw-custom').style.display = 'inline-flex';
+          document.getElementById('btn-clear-custom').style.display = 'none';
+          document.getElementById('drawing-indicator').style.display = 'none';
+          
+          recomputeMAT();
+          return;
+        }
       }
-    }
-    state.customVertices.push(pos);
-    requestAnimationFrame(draw);
-  } else {
-    // Check if clicking near any vertex of the polygon to drag it
-    for (let i = 0; i < state.polygon.length; i++) {
-      const v = state.polygon[i];
-      if (pos.dist(v) < 12) {
-        state.draggedVertexIdx = i;
-        document.getElementById('status-dot').classList.add('loading');
-        document.getElementById('status-text').innerText = `Dragging vertex ${i}...`;
-        break;
+      state.customVertices.push(worldPos);
+      requestAnimationFrame(draw);
+    } else {
+      // Check if clicking near any vertex of the polygon to drag it
+      let clickedHandle = false;
+      for (let i = 0; i < state.polygon.length; i++) {
+        const v = state.polygon[i];
+        const screenV = worldToScreen(v);
+        if (pos.dist(screenV) < 12) {
+          state.draggedVertexIdx = i;
+          document.getElementById('status-dot').classList.add('loading');
+          document.getElementById('status-text').innerText = `Dragging vertex ${i}...`;
+          clickedHandle = true;
+          break;
+        }
+      }
+      
+      // If not clicking a vertex, Left-click on empty space pans!
+      if (!clickedHandle) {
+        state.camera.isPanning = true;
+        state.camera.panStart = new Vector2D(e.clientX, e.clientY);
       }
     }
   }
@@ -798,22 +935,34 @@ function handleMouseDown(e) {
 
 function handleMouseMove(e) {
   const pos = getMousePos(e);
+  const worldPos = screenToWorld(pos);
+  state.mouseWorldPos = worldPos;
 
-  if (state.isDrawing) {
-    // If drawing, update preview lines (handled inside draw() dynamically)
+  if (state.camera.isPanning) {
+    const dx = e.clientX - state.camera.panStart.x;
+    const dy = e.clientY - state.camera.panStart.y;
+    state.camera.x += dx;
+    state.camera.y += dy;
+    state.camera.panStart = new Vector2D(e.clientX, e.clientY);
+    updateCameraHUD();
     requestAnimationFrame(draw);
-  } else if (state.draggedVertexIdx !== -1) {
-    // Update dragged vertex position
-    state.polygon[state.draggedVertexIdx] = pos;
+  }
+
+  if (state.draggedVertexIdx !== -1) {
+    // Update dragged vertex position (in world coordinates)
+    state.polygon[state.draggedVertexIdx] = worldPos;
     recomputeMAT();
-  } else if (state.hoverCircle && state.polygon.length >= 3) {
-    // Hover logic: Find closest medial point to mouse
+  } else if (state.isDrawing) {
+    requestAnimationFrame(draw);
+  } else if (state.hoverCircle && state.polygon.length >= 3 && !state.camera.isPanning) {
+    // Hover logic: Find closest medial point to mouse (measured in screen space distance)
     let bestPoint = null;
-    let minDist = 20; // 20px active hover range
+    let minDist = 20; // 20px active hover range in screen space
 
     // Check regular skeleton points
     for (const p of state.skeletonData.regularPoints) {
-      const dist = pos.dist(p);
+      const screenP = worldToScreen(p);
+      const dist = pos.dist(screenP);
       if (dist < minDist) {
         minDist = dist;
         bestPoint = p;
@@ -823,7 +972,8 @@ function handleMouseMove(e) {
     // Check junction points
     for (const jp of state.skeletonData.junctionPoints) {
       if (jp.isEndPoint) continue; // skip end points at polygon boundary (radius=0)
-      const dist = pos.dist(jp);
+      const screenJP = worldToScreen(jp);
+      const dist = pos.dist(screenJP);
       if (dist < minDist) {
         minDist = dist;
         bestPoint = jp;
@@ -837,12 +987,44 @@ function handleMouseMove(e) {
   }
 }
 
-function handleMouseUp() {
+function handleMouseUp(e) {
+  state.camera.isPanning = false;
   if (state.draggedVertexIdx !== -1) {
     state.draggedVertexIdx = -1;
     document.getElementById('status-dot').classList.remove('loading');
     recomputeMAT();
   }
+}
+
+function handleMouseLeave() {
+  state.camera.isPanning = false;
+  state.mouseWorldPos = null;
+  state.hoveredMedialPoint = null;
+  if (state.draggedVertexIdx !== -1) {
+    state.draggedVertexIdx = -1;
+    document.getElementById('status-dot').classList.remove('loading');
+    recomputeMAT();
+  }
+  requestAnimationFrame(draw);
+}
+
+function handleWheel(e) {
+  e.preventDefault();
+  const mousePos = getMousePos(e);
+  const oldZoom = state.camera.zoom;
+  const zoomFactor = 1.1;
+  let newZoom = e.deltaY < 0 ? oldZoom * zoomFactor : oldZoom / zoomFactor;
+  
+  // Constrain zoom levels between 0.2x and 10.0x
+  newZoom = Math.min(10.0, Math.max(0.2, newZoom));
+  
+  // Center zoom dynamically at current cursor position
+  state.camera.x = mousePos.x - (mousePos.x - state.camera.x) * (newZoom / oldZoom);
+  state.camera.y = mousePos.y - (mousePos.y - state.camera.y) * (newZoom / oldZoom);
+  state.camera.zoom = newZoom;
+  
+  updateCameraHUD();
+  requestAnimationFrame(draw);
 }
 
 // Initialise App
