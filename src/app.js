@@ -14,7 +14,6 @@ const state = {
   showSkeleton: true,
   simplifySkeleton: false,
   mergeThreshold: 2.0, // Default in meters
-  showVoronoi: false,
   pruneBranches: false,
   showRibs: false,
   ribSpacing: 5.0, // Default in meters
@@ -24,7 +23,7 @@ const state = {
   customVertices: [],
   draggedVertexIdx: -1,
   hoveredMedialPoint: null,
-  skeletonData: { regularPoints: [], junctionPoints: [], simplifiedSegments: [], simplifiedNodes: [], voronoiCells: [] },
+  skeletonData: { regularPoints: [], junctionPoints: [], simplifiedSegments: [], simplifiedNodes: [] },
   computeTime: 0,
   camera: {
     zoom: 1.0 // kept for backward compatibility and HUD display
@@ -444,10 +443,6 @@ function recomputeMAT() {
   skeleton.simplifiedSegments = segments;
   skeleton.simplifiedNodes = nodes;
 
-  // Compute exact trimmed Voronoi cells from interior nodes (Z-plane bounds)
-  const interiorSeeds = nodes.filter(p => !p.isEndPoint);
-  skeleton.voronoiCells = mat.computeVoronoiCells(interiorSeeds, 2000, 2000);
-  
   state.skeletonData = skeleton;
   state.computeTime = performance.now() - start;
 
@@ -538,44 +533,7 @@ function draw() {
     faceMesh.position.z = 0.005; // Slightly off the grid floor
     meshesGroup.add(faceMesh);
 
-    // Trimmed Voronoi Partition Cells
-    if (state.showVoronoi && state.skeletonData.voronoiCells.length > 0) {
-      state.skeletonData.voronoiCells.forEach((cell, idx) => {
-        if (cell.polygon.length >= 3) {
-          const cellShape = new THREE.Shape();
-          cellShape.moveTo(cell.polygon[0].x, cell.polygon[0].y);
-          for (let k = 1; k < cell.polygon.length; k++) {
-            cellShape.lineTo(cell.polygon[k].x, cell.polygon[k].y);
-          }
-          cellShape.closePath();
 
-          const hue = (idx * 137.5) % 360;
-          const vGeom = new THREE.ShapeGeometry(cellShape);
-          const vMat = new THREE.MeshBasicMaterial({
-            color: new THREE.Color(`hsl(${hue}, 40%, 65%)`), // Muted pastel HSL
-            transparent: true,
-            opacity: 0.12,
-            side: THREE.DoubleSide,
-            depthWrite: false
-          });
-          const vMesh = new THREE.Mesh(vGeom, vMat);
-          vMesh.position.z = 0.01;
-          meshesGroup.add(vMesh);
-
-          // Subtle Glowing Cell Boundary Lines
-          const vPts = cell.polygon.map(p => new THREE.Vector3(p.x, p.y, 0.012));
-          vPts.push(vPts[0]); // Close outline
-          const vBorderGeom = new THREE.BufferGeometry().setFromPoints(vPts);
-          const vBorderMat = new THREE.LineBasicMaterial({
-            color: new THREE.Color(`hsl(${hue}, 50%, 60%)`), // Muted boundary
-            transparent: true,
-            opacity: 0.4
-          });
-          const vBorderLine = new THREE.Line(vBorderGeom, vBorderMat);
-          meshesGroup.add(vBorderLine);
-        }
-      });
-    }
 
     // Polygon Thick Boundary Outline (Slightly raised Z to overlay clean)
     const boundaryPts = state.polygon.map(p => new THREE.Vector3(p.x, p.y, 0.02));
@@ -1115,10 +1073,7 @@ function setupEventListeners() {
     recomputeMAT();
   });
 
-  document.getElementById('chk-show-voronoi').addEventListener('change', (e) => {
-    state.showVoronoi = e.target.checked;
-    draw();
-  });
+
   document.getElementById('chk-hover-circle').addEventListener('change', (e) => {
     state.hoverCircle = e.target.checked;
     if (!state.hoverCircle) state.hoveredMedialPoint = null;
@@ -1387,7 +1342,7 @@ function handleMouseMove(e) {
     recomputeMAT();
   } else if (state.isDrawing) {
     draw();
-  } else if (state.hoverCircle && state.polygon.length >= 3 && !controls.state === -1) {
+  } else if (state.hoverCircle && state.polygon.length >= 3 && controls.state === -1) {
     // Hover logic: Find closest medial point (measured in screen space distance)
     const rect = canvas.getBoundingClientRect();
     const screenMouse = new Vector2D(e.clientX - rect.left, e.clientY - rect.top);
