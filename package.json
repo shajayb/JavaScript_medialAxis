@@ -25,6 +25,7 @@
     "vite": "^5.2.11"
   },
   "dependencies": {
+    "rhino3dm": "^8.4.0",
     "three": "^0.184.0"
   }
 }

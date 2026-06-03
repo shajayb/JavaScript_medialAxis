@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MedialAxisTransform } from './medialAxis.js';
 import { Vector2D } from './utils/vector2d.js';
 import { distanceToPolygon, closestPointOnSegment } from './utils/geometry.js';
+import { RhinoManager } from './utils/RhinoManager.js';
 
 // Application State
 const state = {
@@ -12,11 +13,11 @@ const state = {
   precision: 1e-5,
   showSkeleton: true,
   simplifySkeleton: false,
-  mergeThreshold: 20,
+  mergeThreshold: 2.0, // Default in meters
   showVoronoi: false,
   pruneBranches: false,
   showRibs: false,
-  ribSpacing: 50,
+  ribSpacing: 5.0, // Default in meters
   hoverCircle: true,
   showGovernors: true,
   isDrawing: false,
@@ -39,6 +40,30 @@ const wrapper = document.getElementById('canvas-wrapper');
 let renderer, scene, cameraPerspective, cameraOrthographic, cameraActive;
 let controls;
 let meshesGroup; // Group to hold all dynamic geometric meshes
+let rhinoGroup;
+let rhinoManager;
+
+const appContext = {
+  state,
+  rhinoGroup: null,
+  setPolygonFrom3dm: (points) => {
+    state.polygon = points.map(pt => new Vector2D(pt[0], pt[1]));
+    state.activePreset = 'custom';
+    
+    const cards = document.querySelectorAll('.preset-card');
+    cards.forEach(c => c.classList.remove('active'));
+    
+    const cardCustom = document.getElementById('card-custom');
+    if (cardCustom) {
+      cardCustom.style.display = 'flex';
+      cardCustom.classList.add('active');
+    }
+
+    recomputeMAT();
+    resetCameraView();
+  },
+  acceptedRibsCache: null
+};
 const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0); // Z=0 plane for raycast dragging
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
@@ -97,8 +122,8 @@ function initThree() {
   dirLight2.position.set(-1000, -800, 1000);
   scene.add(dirLight2);
 
-  // 7. Infinite CAD Grid Floor on XY Plane
-  const gridHelper = new THREE.GridHelper(5000, 125, 0xe2e8f0, 0xf1f5f9); // Beautiful light gray grid lines
+  // 7. Infinite CAD Grid Floor on XY Plane (Meter grid cells of 10m x 10m)
+  const gridHelper = new THREE.GridHelper(2000, 200, 0xe2e8f0, 0xf1f5f9); // Beautiful light gray grid lines
   gridHelper.rotation.x = Math.PI / 2; // Rotate grid to align with XY plane
   gridHelper.position.z = -0.01; // Slightly below Z=0 to prevent z-fighting
   scene.add(gridHelper);
@@ -106,6 +131,13 @@ function initThree() {
   // 8. Meshes Parent Group
   meshesGroup = new THREE.Group();
   scene.add(meshesGroup);
+
+  rhinoGroup = new THREE.Group();
+  scene.add(rhinoGroup);
+  appContext.rhinoGroup = rhinoGroup;
+
+  rhinoManager = new RhinoManager(appContext);
+  window.rhinoManager = rhinoManager;
 
   // 9. Resize Canvas
   window.addEventListener('resize', resizeCanvas);
@@ -278,10 +310,10 @@ function loadPreset(name) {
   resetCameraView();
 }
 
-// Polygon Presets Generators (centered around 0,0 in world space)
+// Polygon Presets Generators (centered around 0,0 in world space - working in meters)
 const presets = {
   cross: (w, h) => {
-    const s = Math.min(w, h);
+    const s = 100; // 100 meters
     const cx = 0, cy = 0;
     return [
       new Vector2D(cx - s*0.1, cy + s*0.3),
@@ -299,7 +331,7 @@ const presets = {
     ];
   },
   yshape: (w, h) => {
-    const s = Math.min(w, h);
+    const s = 100; // 100 meters
     const cx = 0, cy = 0;
     return [
       new Vector2D(cx + s*0.1, cy - s*0.4),
@@ -314,7 +346,7 @@ const presets = {
     ];
   },
   sqdonut: (w, h) => {
-    const s = Math.min(w, h);
+    const s = 100; // 100 meters
     const cx = 0, cy = 0;
     return [
       new Vector2D(cx - s*0.01, cy + s*0.3),
@@ -332,7 +364,7 @@ const presets = {
     ];
   },
   donut: (w, h) => {
-    const s = Math.min(w, h);
+    const s = 100; // 100 meters
     const cx = 0, cy = 0;
     const points = [];
     const numSegments = 32;
@@ -349,7 +381,7 @@ const presets = {
     return points;
   },
   pentagon: (w, h) => {
-    const s = Math.min(w, h);
+    const s = 100; // 100 meters
     const cx = 0, cy = 0;
     return [
       new Vector2D(cx - s * 0.05, cy + s * 0.4),
@@ -360,7 +392,7 @@ const presets = {
     ];
   },
   tree: (w, h) => {
-    const s = Math.min(w, h);
+    const s = 100; // 100 meters
     const cx = 0, cy = 0;
     return [
       new Vector2D(cx + s*0.1,  cy - s*0.4),
@@ -582,14 +614,14 @@ function draw() {
     }
 
     // Custom points discs
-    const customSphGeom = new THREE.CircleGeometry(3.5, 32);
+    const customSphGeom = new THREE.CircleGeometry(0.7, 32);
     for (let i = 0; i < state.customVertices.length; i++) {
       const v = state.customVertices[i];
       const isFirst = i === 0 && state.customVertices.length >= 3;
       let isNearFirst = false;
       if (isFirst && state.mouseWorldPos) {
         const d = Math.sqrt((v.x - state.mouseWorldPos.x)**2 + (v.y - state.mouseWorldPos.y)**2);
-        isNearFirst = d < 12; // 12 world units closure threshold
+        isNearFirst = d < 2.0; // 2.0 world meters closure threshold
       }
 
       const customSphMat = new THREE.MeshBasicMaterial({
@@ -651,7 +683,7 @@ function draw() {
       }
 
       // Small beads along standard curves (discs instead of 3D spheres)
-      const regularBeadGeom = new THREE.CircleGeometry(1.6, 16);
+      const regularBeadGeom = new THREE.CircleGeometry(0.3, 16);
       const regularBeadMat = new THREE.MeshBasicMaterial({ color: 0x6b7280 });
       for (const p of pts) {
         const bead = new THREE.Mesh(regularBeadGeom, regularBeadMat);
@@ -670,7 +702,7 @@ function draw() {
     }
 
     for (const jp of nodesToDraw) {
-      const rad = jp.isEndPoint ? 4.2 : 5.5;
+      const rad = jp.isEndPoint ? 0.8 : 1.1; // Meter radius
       const nodeGeom = new THREE.CircleGeometry(rad, 32);
       const nodeMat = new THREE.MeshBasicMaterial({
         color: jp.isEndPoint ? 0x4b5563 : 0x374151
@@ -698,7 +730,7 @@ function draw() {
         ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
         : state.skeletonData.simplifiedSegments;
 
-      const beadGeom = new THREE.CircleGeometry(2.4, 16);
+      const beadGeom = new THREE.CircleGeometry(0.4, 16);
       const beadMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White spine division discs
 
       const ribMat = new THREE.LineBasicMaterial({
@@ -707,7 +739,7 @@ function draw() {
         opacity: 0.65
       });
 
-      const contactGeom = new THREE.CircleGeometry(2.2, 16);
+      const contactGeom = new THREE.CircleGeometry(0.45, 16);
       const contactMat = new THREE.MeshBasicMaterial({ color: 0x4b5563 });
 
       const candidateRibs = [];
@@ -879,6 +911,7 @@ function draw() {
       }
 
       // Draw all accepted ribs
+      appContext.acceptedRibsCache = acceptedRibs; // Cache for 3DM export
       for (const rib of acceptedRibs) {
         const rPts = [
           new THREE.Vector3(rib.source.x, rib.source.y, 0.038),
@@ -900,7 +933,7 @@ function draw() {
     const rad = hp.radius;
 
     // Outer flat ring outline
-    const ringGeom = new THREE.RingGeometry(rad - 1, rad + 1, 64);
+    const ringGeom = new THREE.RingGeometry(rad - 0.2, rad + 0.2, 64); // Thinner outline in meters
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0x374151, // Dark Slate Grey
       transparent: true,
@@ -924,8 +957,8 @@ function draw() {
     disc.position.set(hp.x, hp.y, 0.04);
     meshesGroup.add(disc);
 
-    // Glowing core center disc
-    const centerGeom = new THREE.CircleGeometry(3.6, 16);
+    // Glowing core center disc (scaled down for meters)
+    const centerGeom = new THREE.CircleGeometry(0.6, 16);
     const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const centerMesh = new THREE.Mesh(centerGeom, centerMat);
     centerMesh.position.set(hp.x, hp.y, 0.048);
@@ -937,7 +970,7 @@ function draw() {
         color: 0x4b5563, // Slate Grey
         linewidth: 1.5
       });
-      const govSphGeom = new THREE.CircleGeometry(2.5, 16);
+      const govSphGeom = new THREE.CircleGeometry(0.5, 16); // Scaled down for meters
       const govSphMat = new THREE.MeshBasicMaterial({ color: 0x4b5563 });
 
       for (let i = 0; i < state.polygon.length; i++) {
@@ -962,10 +995,10 @@ function draw() {
     }
   }
 
-  // 6. Interactive Polygon Vertices Drag Handles (Chrome Indigo Discs)
+  // 6. Interactive Polygon Vertices Drag Handles (Chrome Indigo Discs - Scaled down for meters)
   if (!state.isDrawing && state.polygon.length > 0) {
-    const handleGeom = new THREE.CircleGeometry(5.2, 32);
-    const coreGeom = new THREE.CircleGeometry(1.8, 16);
+    const handleGeom = new THREE.CircleGeometry(1.0, 32);
+    const coreGeom = new THREE.CircleGeometry(0.3, 16);
     const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
     for (let i = 0; i < state.polygon.length; i++) {
@@ -1064,21 +1097,21 @@ function setupEventListeners() {
     recomputeMAT();
   });
   
-  // Slider - Rib Spacing
+  // Slider - Rib Spacing (in meters)
   const sRibs = document.getElementById('slider-ribs');
   const valRibs = document.getElementById('val-ribs');
   sRibs.addEventListener('input', (e) => {
-    state.ribSpacing = parseInt(e.target.value);
-    valRibs.innerText = `${state.ribSpacing}px`;
+    state.ribSpacing = parseFloat(e.target.value);
+    valRibs.innerText = `${state.ribSpacing.toFixed(1)}m`;
     draw();
   });
   
-  // Slider - Merge distance
+  // Slider - Merge distance (in meters)
   const sMerge = document.getElementById('slider-merge');
   const valMerge = document.getElementById('val-merge');
   sMerge.addEventListener('input', (e) => {
-    state.mergeThreshold = parseInt(e.target.value);
-    valMerge.innerText = `${state.mergeThreshold}px`;
+    state.mergeThreshold = parseFloat(e.target.value);
+    valMerge.innerText = `${state.mergeThreshold.toFixed(1)}m`;
     recomputeMAT();
   });
 
@@ -1137,6 +1170,146 @@ function setupEventListeners() {
   if (btnResetView) {
     btnResetView.addEventListener('click', resetCameraView);
   }
+
+  // Set up Rhino Controls
+  setupRhinoUIControls();
+}
+
+function setupRhinoUIControls() {
+  const fileInput = document.getElementById('rhino-file-input');
+  const uploadBtn = document.getElementById('btn-upload-rhino');
+  const fileInfo = document.getElementById('rhino-file-info');
+  const filenameLabel = document.getElementById('rhino-filename');
+  const countLabel = document.getElementById('rhino-object-count');
+  const layersLabel = document.getElementById('lbl-rhino-layers');
+  const container = document.getElementById('rhino-layers-container');
+  const actionsDiv = document.getElementById('rhino-actions');
+  const btnLoad = document.getElementById('btn-load-rhino-layers');
+  const btnClear = document.getElementById('btn-clear-rhino');
+  const btnExport = document.getElementById('btn-export-rhino');
+  const exportFilenameInput = document.getElementById('rhino-export-filename');
+
+  if (!fileInput || !uploadBtn) return;
+
+  let activeBuffer = null;
+
+  uploadBtn.addEventListener('click', () => {
+    fileInput.click();
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    filenameLabel.textContent = file.name;
+    uploadBtn.textContent = "Loading File...";
+    uploadBtn.disabled = true;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        activeBuffer = event.target.result;
+        console.log("[UI] Parsing Rhino file metadata...");
+        const { layers, objectCount } = await rhinoManager.parseMetadata(activeBuffer);
+        
+        countLabel.textContent = `${objectCount} objects found`;
+        fileInfo.style.display = 'block';
+
+        container.innerHTML = '';
+        if (layers && layers.length > 0) {
+          layers.forEach(layer => {
+            const item = document.createElement('div');
+            item.className = 'layer-item';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `layer-chk-${layer.index}`;
+            checkbox.value = layer.index;
+            checkbox.checked = layer.visible !== false;
+
+            const dot = document.createElement('div');
+            dot.className = 'layer-color-dot';
+            dot.style.backgroundColor = `rgba(${layer.color.r}, ${layer.color.g}, ${layer.color.b}, ${layer.color.a / 255})`;
+
+            const name = document.createElement('span');
+            name.className = 'layer-name';
+            name.textContent = layer.name;
+            name.title = layer.name;
+
+            name.addEventListener('click', () => {
+              checkbox.checked = !checkbox.checked;
+            });
+
+            item.appendChild(checkbox);
+            item.appendChild(dot);
+            item.appendChild(name);
+            container.appendChild(item);
+          });
+
+          layersLabel.style.display = 'block';
+          container.style.display = 'block';
+          actionsDiv.style.display = 'grid';
+        }
+        uploadBtn.textContent = "Change .3DM File";
+      } catch (err) {
+        console.error("[UI] Error loading Rhino metadata:", err);
+        alert("Error loading .3dm metadata: " + err.message);
+        uploadBtn.textContent = "Load .3DM File";
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+
+  btnLoad.addEventListener('click', async () => {
+    if (!activeBuffer) return;
+
+    const checkedBoxes = container.querySelectorAll('input[type="checkbox"]:checked');
+    const selectedIndices = Array.from(checkedBoxes).map(cb => parseInt(cb.value));
+
+    if (selectedIndices.length === 0) {
+      alert("Please select at least one layer to load.");
+      return;
+    }
+
+    btnLoad.disabled = true;
+    const originalText = btnLoad.textContent;
+    btnLoad.textContent = "Loading...";
+
+    try {
+      await rhinoManager.loadLayers(activeBuffer, selectedIndices);
+      console.log("[UI] Rhino geometries successfully loaded.");
+    } catch (err) {
+      console.error("[UI] Error loading layers:", err);
+      alert("Failed to load layers: " + err.message);
+    } finally {
+      btnLoad.disabled = false;
+      btnLoad.textContent = originalText;
+    }
+  });
+
+  btnClear.addEventListener('click', () => {
+    rhinoManager.clearRhinoGeometries();
+    console.log("[UI] Rhino geometries cleared.");
+  });
+
+  btnExport.addEventListener('click', async () => {
+    const filename = exportFilenameInput.value.trim() || "medial_axis_export.3dm";
+    btnExport.disabled = true;
+    btnExport.textContent = "Exporting...";
+
+    try {
+      await rhinoManager.exportSceneTo3dm(filename);
+      console.log("[UI] Export complete.");
+    } catch (err) {
+      console.error("[UI] Error exporting to 3DM:", err);
+      alert("Failed to export to 3DM: " + err.message);
+    } finally {
+      btnExport.disabled = false;
+      btnExport.textContent = "Export to 3DM";
+    }
+  });
 }
 
 // Mouse Event Handlers using 3D Raycasting

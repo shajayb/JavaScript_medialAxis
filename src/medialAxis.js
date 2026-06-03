@@ -116,7 +116,7 @@ export class MedialAxisTransform {
         const cp = closestPointOnSegment(mp, a, b);
         const d = mp.dist(cp);
         
-        const tol = Math.max(2.0, mp.radius * 0.05);
+        const tol = Math.max(0.2, mp.radius * 0.05);
         if (Math.abs(d - mp.radius) < tol) {
           const v1 = b.sub(a);
           const len = v1.length();
@@ -197,7 +197,7 @@ export class MedialAxisTransform {
           score += getGovScore(ga, gb, N);
         }));
         
-        if (score >= 1.0 && mp.dist(n) < 25) {
+        if (score >= 1.0 && mp.dist(n) < 2.5) {
           n.x = (n.x * n.count + mp.x) / (n.count + 1);
           n.y = (n.y * n.count + mp.y) / (n.count + 1);
           n.radius = (n.radius * n.count + mp.radius) / (n.count + 1);
@@ -245,7 +245,7 @@ export class MedialAxisTransform {
           score += getGovScore(ga, gb, this.polygon.length);
         }));
         
-        if (score >= 1.0 && mp.dist(n) < 25) {
+        if (score >= 1.0 && mp.dist(n) < 2.5) {
           n.x = (n.x * n.count + mp.x) / (n.count + 1);
           n.y = (n.y * n.count + mp.y) / (n.count + 1);
           n.radius = (n.radius * n.count + mp.radius) / (n.count + 1);
@@ -453,7 +453,7 @@ export class MedialAxisTransform {
             }
           }
 
-          if (dotProduct < -0.95 || dToLine < 5 || !hasUniqueGov) {
+          if (dotProduct < -0.95 || dToLine < 0.5 || !hasUniqueGov) {
             adj[n1].delete(i);
             adj[n2].delete(i);
 

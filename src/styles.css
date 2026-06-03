@@ -604,3 +604,95 @@ input:checked + .slider-switch:before {
   font-family: var(--font-display);
   box-shadow: var(--card-shadow);
 }
+
+/* Rhino Layer Checklist */
+.layers-scroll-container {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.01);
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.layer-item:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.layer-item input[type="checkbox"] {
+  width: auto !important;
+  margin: 0 !important;
+  cursor: pointer;
+}
+
+.layer-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.layer-name {
+  font-size: 0.75rem;
+  color: var(--text-main);
+  user-select: none;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+/* Rhino 3DM IO extra styles */
+.btn-full {
+  width: 100%;
+  justify-content: center;
+  margin-top: 5px;
+}
+.export-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.input-text {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  background-color: rgba(255, 255, 255, 0.9);
+  color: var(--text-main);
+  outline: none;
+}
+.input-text:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 5px var(--accent-glow);
+}
+.file-info-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border-color);
+}
+.file-info-label {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.file-info-value {
+  color: var(--text-main);
+  font-weight: 600;
+}
+

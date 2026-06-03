@@ -91,7 +91,7 @@ const containsBall = (poly, center, radius) => {
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % poly.length];
-    if (distToSegment(center, a, b) < radius - 0.5) return false;
+    if (distToSegment(center, a, b) < radius - 0.05) return false;
   }
   return true;
 };
@@ -99,7 +99,7 @@ const containsBall = (poly, center, radius) => {
 const computeMedialPointRef = (poly, P, originalQ) => {
   let p = { x: P.x, y: P.y };
   let q = { x: originalQ.x, y: originalQ.y };
-  const EPSILON = 0.5;
+  const EPSILON = 0.05;
 
   let midPoint = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
   let radius = dist(midPoint, P);
@@ -180,7 +180,7 @@ function runReferenceMAT(polygon, numSamples = 1000) {
       const cp = {x: cpInfo.x, y: cpInfo.y};
       const d = dist(mp, cp);
       
-      const tol = Math.max(2.0, mp.r * 0.05);
+      const tol = Math.max(0.2, mp.r * 0.05);
       if (Math.abs(d - mp.r) < tol) { 
         const v1 = { x: b.x - a.x, y: b.y - a.y };
         const len = Math.hypot(v1.x, v1.y);
@@ -261,7 +261,7 @@ function runReferenceMAT(polygon, numSamples = 1000) {
       let score = 0;
       mp.governors.forEach(ga => n.governors.forEach(gb => score += getGovScore(ga, gb, activePoly.length)));
       
-      if (score >= 1.0 && dist(mp, n) < 25) {
+      if (score >= 1.0 && dist(mp, n) < 2.5) {
         n.x = (n.x * n.count + mp.x) / (n.count + 1);
         n.y = (n.y * n.count + mp.y) / (n.count + 1);
         n.r = (n.r * n.count + mp.r) / (n.count + 1); 
@@ -326,7 +326,7 @@ function runReferenceMAT(polygon, numSamples = 1000) {
         if (!active[j] || i >= j) continue;
         
         const avgRadius = ((nodes[i].r || 0) + (nodes[j].r || 0)) / 2;
-        const collapseThreshold = Math.max(20, avgRadius * 0.4); 
+        const collapseThreshold = Math.max(2.0, avgRadius * 0.4); 
 
         if (dist(nodes[i], nodes[j]) < collapseThreshold) { 
           if (nodes[i].isEndPoint && nodes[j].isEndPoint) continue;
@@ -389,7 +389,7 @@ function runReferenceMAT(polygon, numSamples = 1000) {
            }
         }
         
-        if (dotProduct < -0.95 || dToLine < 5 || !hasUniqueGov) { 
+        if (dotProduct < -0.95 || dToLine < 0.5 || !hasUniqueGov) { 
           adj[n1].delete(i);
           adj[n2].delete(i);
           
@@ -536,7 +536,7 @@ const presets = {
   ]
 };
 
-const size = 600;
+const size = 60;
 
 for (const [name, presetFn] of Object.entries(presets)) {
   console.log(`\n========================================`);
@@ -550,10 +550,10 @@ for (const [name, presetFn] of Object.entries(presets)) {
   console.log(`Nodes: ${ref.nodes.length}, Edges: ${ref.edges.length}`);
   
   console.log("Running Ours...");
-  const mat = new MedialAxisTransform(poly, { epsilon: 0.5 });
+  const mat = new MedialAxisTransform(poly, { epsilon: 0.05 });
   const sPerEdge = Math.round(1000 / poly.length);
   const skeleton = mat.computeStructuredSkeleton(sPerEdge);
-  const result = mat.simplifySkeleton(skeleton.regularPoints, skeleton.junctionPoints, 20);
+  const result = mat.simplifySkeleton(skeleton.regularPoints, skeleton.junctionPoints, 2.0);
   console.log(`Nodes: ${result.nodes.length}, Edges: ${result.segments.length}`);
 
   if (name === 'yshape') {
@@ -572,7 +572,7 @@ for (const [name, presetFn] of Object.entries(presets)) {
   assert(ref.edges.length === result.segments.length, `Edges count mismatch: ref ${ref.edges.length}, ours ${result.segments.length}`);
 
   // Verify that every node in our result matches a node in the reference result
-  const matchTol = 12.0; // coordinate tolerance for sampling density variations
+  const matchTol = 1.2; // coordinate tolerance for sampling density variations
   const matchedRefIndices = new Map(); // map our index to ref index
   
   for (let i = 0; i < result.nodes.length; i++) {
