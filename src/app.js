@@ -640,46 +640,6 @@ function draw() {
         }
       }
 
-      // Small beads along standard curves (discs instead of 3D spheres)
-      const regularBeadGeom = new THREE.CircleGeometry(0.3, 16);
-      const regularBeadMat = new THREE.MeshBasicMaterial({ color: 0x6b7280 });
-      for (const p of pts) {
-        const bead = new THREE.Mesh(regularBeadGeom, regularBeadMat);
-        bead.position.set(p.x, p.y, 0.03);
-        meshesGroup.add(bead);
-      }
-    }
-
-    // Draw valence 3+ Junction/End node discs
-    let nodesToDraw = state.simplifySkeleton 
-      ? state.skeletonData.simplifiedNodes 
-      : state.skeletonData.junctionPoints;
-
-    if (state.pruneBranches) {
-      nodesToDraw = nodesToDraw.filter(p => !p.isEndPoint);
-    }
-
-    for (const jp of nodesToDraw) {
-      const rad = jp.isEndPoint ? 0.8 : 1.1; // Meter radius
-      const nodeGeom = new THREE.CircleGeometry(rad, 32);
-      const nodeMat = new THREE.MeshBasicMaterial({
-        color: jp.isEndPoint ? 0x4b5563 : 0x374151
-      });
-      const nodeMesh = new THREE.Mesh(nodeGeom, nodeMat);
-      nodeMesh.position.set(jp.x, jp.y, 0.035);
-      meshesGroup.add(nodeMesh);
-
-      // Concentric flat ring helper on floor plane around nodes
-      const ringGeom = new THREE.RingGeometry(rad * 1.5, rad * 1.8, 32);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: jp.isEndPoint ? 0x4b5563 : 0x374151,
-        transparent: true,
-        opacity: 0.22,
-        side: THREE.DoubleSide
-      });
-      const ringMesh = new THREE.Mesh(ringGeom, ringMat);
-      ringMesh.position.set(jp.x, jp.y, 0.035);
-      meshesGroup.add(ringMesh);
     }
 
     // Render Structural Ribs dropping columns to boundary
