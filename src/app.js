@@ -839,54 +839,47 @@ function draw() {
         }
       }
 
-      // Filter and resolve crossings for quarantined presets
-      const isQuarantined = state.activePreset === 'yshape' || state.activePreset === 'donut' || state.activePreset === 'tree';
-      let acceptedRibs = [];
+      // Sort candidates: higher priority first, then shorter lengths
+      const sortedCandidates = candidateRibs.map(r => ({
+        ...r,
+        length: r.source.dist(r.target)
+      })).sort((a, b) => {
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        return a.length - b.length;
+      });
 
-      if (isQuarantined) {
-        // Sort candidates: higher priority first, then shorter lengths
-        const sortedCandidates = candidateRibs.map(r => ({
-          ...r,
-          length: r.source.dist(r.target)
-        })).sort((a, b) => {
-          if (a.priority !== b.priority) return a.priority - b.priority;
-          return a.length - b.length;
-        });
+      // Helper to check intersection between two ribs
+      const ribsCross = (r1, r2) => {
+        // Skip if they share a source or target point (within small epsilon)
+        if (r1.source.dist(r2.source) < 1e-3 || r1.target.dist(r2.target) < 1e-3 ||
+            r1.source.dist(r2.target) < 1e-3 || r1.target.dist(r2.source) < 1e-3) {
+          return false;
+        }
 
-        // Helper to check intersection between two ribs
-        const ribsCross = (r1, r2) => {
-          // Skip if they share a source or target point (within small epsilon)
-          if (r1.source.dist(r2.source) < 1e-3 || r1.target.dist(r2.target) < 1e-3 ||
-              r1.source.dist(r2.target) < 1e-3 || r1.target.dist(r2.source) < 1e-3) {
-            return false;
-          }
+        const ccw = (a, b, c) => (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+        return (ccw(r1.source, r2.source, r2.target) !== ccw(r1.target, r2.source, r2.target)) && 
+               (ccw(r1.source, r1.target, r2.source) !== ccw(r1.source, r1.target, r2.target));
+      };
 
-          const ccw = (a, b, c) => (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
-          return (ccw(r1.source, r2.source, r2.target) !== ccw(r1.target, r2.source, r2.target)) && 
-                 (ccw(r1.source, r1.target, r2.source) !== ccw(r1.source, r1.target, r2.target));
-        };
+      const acceptedRibs = [];
+      for (const candidate of sortedCandidates) {
+        // 1. Check if it crosses the polygon boundary
+        if (crossesPolygonBoundary(candidate.source, candidate.target, state.polygon)) {
+          continue;
+        }
 
-        for (const candidate of sortedCandidates) {
-          // 1. Check if it crosses the polygon boundary
-          if (crossesPolygonBoundary(candidate.source, candidate.target, state.polygon)) {
-            continue;
-          }
-
-          // 2. Check if it crosses any already accepted rib
-          let crossesAccepted = false;
-          for (const accepted of acceptedRibs) {
-            if (ribsCross(candidate, accepted)) {
-              crossesAccepted = true;
-              break;
-            }
-          }
-
-          if (!crossesAccepted) {
-            acceptedRibs.push(candidate);
+        // 2. Check if it crosses any already accepted rib
+        let crossesAccepted = false;
+        for (const accepted of acceptedRibs) {
+          if (ribsCross(candidate, accepted)) {
+            crossesAccepted = true;
+            break;
           }
         }
-      } else {
-        acceptedRibs = candidateRibs;
+
+        if (!crossesAccepted) {
+          acceptedRibs.push(candidate);
+        }
       }
 
       // Draw all accepted ribs
