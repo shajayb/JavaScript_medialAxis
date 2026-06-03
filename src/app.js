@@ -443,6 +443,29 @@ function recomputeMAT() {
   draw();
 }
 
+const crossesPolygonBoundary = (p1, p2, polygon) => {
+  const shrink = 1e-3;
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  
+  const p1Prime = new Vector2D(p1.x + dx * shrink, p1.y + dy * shrink);
+  const p2Prime = new Vector2D(p2.x - dx * shrink, p2.y - dy * shrink);
+
+  const ccw = (a, b, c) => (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+  const segmentsIntersect = (a, b, c, d) => {
+    return (ccw(a, c, d) !== ccw(b, c, d)) && (ccw(a, b, c) !== ccw(a, b, d));
+  };
+
+  for (let i = 0; i < polygon.length; i++) {
+    const c = polygon[i];
+    const d = polygon[(i + 1) % polygon.length];
+    if (segmentsIntersect(p1Prime, p2Prime, c, d)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 // 3D Scene Geometry Builder (Clears and populates meshesGroup)
 function draw() {
   if (!meshesGroup) return;
@@ -691,6 +714,8 @@ function draw() {
       const contactGeom = new THREE.SphereGeometry(2.2, 8, 8);
       const contactMat = new THREE.MeshBasicMaterial({ color: 0xdb2777 });
 
+      const candidateRibs = [];
+
       // Draw segment division ribs
       for (const seg of segmentsToDivide) {
         const startPt = seg.start;
@@ -733,21 +758,17 @@ function draw() {
             }
           }
 
-          const ribsToDraw = [closest1];
-          if (closest2) ribsToDraw.push(closest2);
-
-          for (const rib of ribsToDraw) {
-            const rPts = [
-              new THREE.Vector3(D_k.x, D_k.y, 0.038),
-              new THREE.Vector3(rib.point.x, rib.point.y, 0.038)
-            ];
-            const rGeom = new THREE.BufferGeometry().setFromPoints(rPts);
-            const rLine = new THREE.Line(rGeom, ribMat);
-            meshesGroup.add(rLine);
-
-            const contactMesh = new THREE.Mesh(contactGeom, contactMat);
-            contactMesh.position.set(rib.point.x, rib.point.y, 0.038);
-            meshesGroup.add(contactMesh);
+          candidateRibs.push({
+            source: D_k,
+            target: closest1.point,
+            priority: 1
+          });
+          if (closest2) {
+            candidateRibs.push({
+              source: D_k,
+              target: closest2.point,
+              priority: 2
+            });
           }
         }
       }
@@ -797,28 +818,94 @@ function draw() {
           }
         }
 
-        const ribsToDraw = [closest1];
-        if (closest2) ribsToDraw.push(closest2);
-        if (closest3) ribsToDraw.push(closest3);
-
-        for (const rib of ribsToDraw) {
-          const rPts = [
-            new THREE.Vector3(node.x, node.y, 0.038),
-            new THREE.Vector3(rib.point.x, rib.point.y, 0.038)
-          ];
-          const rGeom = new THREE.BufferGeometry().setFromPoints(rPts);
-          const rLine = new THREE.Line(rGeom, ribMat);
-          meshesGroup.add(rLine);
-
-          const contactMesh = new THREE.Mesh(contactGeom, contactMat);
-          contactMesh.position.set(rib.point.x, rib.point.y, 0.038);
-          meshesGroup.add(contactMesh);
+        candidateRibs.push({
+          source: node,
+          target: closest1.point,
+          priority: 1
+        });
+        if (closest2) {
+          candidateRibs.push({
+            source: node,
+            target: closest2.point,
+            priority: 2
+          });
         }
+        if (closest3) {
+          candidateRibs.push({
+            source: node,
+            target: closest3.point,
+            priority: 3
+          });
+        }
+      }
+
+      // Filter and resolve crossings for quarantined presets
+      const isQuarantined = state.activePreset === 'yshape' || state.activePreset === 'donut' || state.activePreset === 'tree';
+      let acceptedRibs = [];
+
+      if (isQuarantined) {
+        // Sort candidates: higher priority first, then shorter lengths
+        const sortedCandidates = candidateRibs.map(r => ({
+          ...r,
+          length: r.source.dist(r.target)
+        })).sort((a, b) => {
+          if (a.priority !== b.priority) return a.priority - b.priority;
+          return a.length - b.length;
+        });
+
+        // Helper to check intersection between two ribs
+        const ribsCross = (r1, r2) => {
+          // Skip if they share a source or target point (within small epsilon)
+          if (r1.source.dist(r2.source) < 1e-3 || r1.target.dist(r2.target) < 1e-3 ||
+              r1.source.dist(r2.target) < 1e-3 || r1.target.dist(r2.source) < 1e-3) {
+            return false;
+          }
+
+          const ccw = (a, b, c) => (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+          return (ccw(r1.source, r2.source, r2.target) !== ccw(r1.target, r2.source, r2.target)) && 
+                 (ccw(r1.source, r1.target, r2.source) !== ccw(r1.source, r1.target, r2.target));
+        };
+
+        for (const candidate of sortedCandidates) {
+          // 1. Check if it crosses the polygon boundary
+          if (crossesPolygonBoundary(candidate.source, candidate.target, state.polygon)) {
+            continue;
+          }
+
+          // 2. Check if it crosses any already accepted rib
+          let crossesAccepted = false;
+          for (const accepted of acceptedRibs) {
+            if (ribsCross(candidate, accepted)) {
+              crossesAccepted = true;
+              break;
+            }
+          }
+
+          if (!crossesAccepted) {
+            acceptedRibs.push(candidate);
+          }
+        }
+      } else {
+        acceptedRibs = candidateRibs;
+      }
+
+      // Draw all accepted ribs
+      for (const rib of acceptedRibs) {
+        const rPts = [
+          new THREE.Vector3(rib.source.x, rib.source.y, 0.038),
+          new THREE.Vector3(rib.target.x, rib.target.y, 0.038)
+        ];
+        const rGeom = new THREE.BufferGeometry().setFromPoints(rPts);
+        const rLine = new THREE.Line(rGeom, ribMat);
+        meshesGroup.add(rLine);
+
+        const contactMesh = new THREE.Mesh(contactGeom, contactMat);
+        contactMesh.position.set(rib.target.x, rib.target.y, 0.038);
+        meshesGroup.add(contactMesh);
       }
     }
   }
 
-  // 5. Interactive Inscribed Disc & Governorstangents
   if (state.hoverCircle && state.hoveredMedialPoint && state.polygon.length >= 3) {
     const hp = state.hoveredMedialPoint;
     const rad = hp.radius;
