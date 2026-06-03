@@ -496,7 +496,7 @@ function draw() {
 
     const faceGeom = new THREE.ShapeGeometry(shape);
     const faceMat = new THREE.MeshBasicMaterial({
-      color: 0x4f46e5, // Royal Indigo
+      color: 0x374151, // Dark Slate Grey
       transparent: true,
       opacity: 0.05,
       side: THREE.DoubleSide,
@@ -520,7 +520,7 @@ function draw() {
           const hue = (idx * 137.5) % 360;
           const vGeom = new THREE.ShapeGeometry(cellShape);
           const vMat = new THREE.MeshBasicMaterial({
-            color: new THREE.Color(`hsl(${hue}, 70%, 55%)`),
+            color: new THREE.Color(`hsl(${hue}, 40%, 65%)`), // Muted pastel HSL
             transparent: true,
             opacity: 0.12,
             side: THREE.DoubleSide,
@@ -535,7 +535,7 @@ function draw() {
           vPts.push(vPts[0]); // Close outline
           const vBorderGeom = new THREE.BufferGeometry().setFromPoints(vPts);
           const vBorderMat = new THREE.LineBasicMaterial({
-            color: new THREE.Color(`hsl(${hue}, 85%, 65%)`),
+            color: new THREE.Color(`hsl(${hue}, 50%, 60%)`), // Muted boundary
             transparent: true,
             opacity: 0.4
           });
@@ -550,7 +550,7 @@ function draw() {
     boundaryPts.push(boundaryPts[0]); // Close boundary
     const boundaryGeom = new THREE.BufferGeometry().setFromPoints(boundaryPts);
     const boundaryMat = new THREE.LineBasicMaterial({
-      color: 0x4f46e5, // Royal Indigo
+      color: 0x374151, // Dark Slate Grey
       linewidth: 2.0
     });
     const boundaryLine = new THREE.Line(boundaryGeom, boundaryMat);
@@ -574,15 +574,15 @@ function draw() {
     if (previewPts.length >= 2) {
       const previewGeom = new THREE.BufferGeometry().setFromPoints(previewPts);
       const previewMat = new THREE.LineBasicMaterial({
-        color: 0xdb2777, // Glowing Magenta
+        color: 0x4b5563, // Dark Slate Grey
         linewidth: 1.5
       });
       const previewLine = new THREE.Line(previewGeom, previewMat);
       meshesGroup.add(previewLine);
     }
 
-    // Custom points spheres
-    const customSphGeom = new THREE.SphereGeometry(3.5, 12, 12);
+    // Custom points discs
+    const customSphGeom = new THREE.CircleGeometry(3.5, 32);
     for (let i = 0; i < state.customVertices.length; i++) {
       const v = state.customVertices[i];
       const isFirst = i === 0 && state.customVertices.length >= 3;
@@ -593,7 +593,7 @@ function draw() {
       }
 
       const customSphMat = new THREE.MeshBasicMaterial({
-        color: isNearFirst ? 0x10b981 : (isFirst ? 0x4f46e5 : 0xdb2777)
+        color: isNearFirst ? 0x10b981 : (isFirst ? 0x374151 : 0x4b5563)
       });
       const customSphMesh = new THREE.Mesh(customSphGeom, customSphMat);
       customSphMesh.position.set(v.x, v.y, 0.03);
@@ -606,13 +606,13 @@ function draw() {
     const pts = state.skeletonData.regularPoints;
 
     if (state.simplifySkeleton) {
-      // Render Simplified MST straight branches as elegant thick glowing lines
+      // Render Simplified MST straight branches as elegant thick lines
       const segmentsToDraw = state.pruneBranches
         ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
         : state.skeletonData.simplifiedSegments;
 
       const simplifiedLineMat = new THREE.LineBasicMaterial({
-        color: 0xdb2777, // Vibrant electric magenta
+        color: 0x374151, // Dark Slate Grey
         linewidth: 3.5
       });
 
@@ -629,7 +629,7 @@ function draw() {
       // Render Default curved skeleton lines
       const samples = state.samplesPerEdge;
       const curveMat = new THREE.LineBasicMaterial({
-        color: 0x0ea5e9, // Sky Blue
+        color: 0x6b7280, // Medium Slate Grey
         transparent: true,
         opacity: 0.65,
         linewidth: 1.5
@@ -650,9 +650,9 @@ function draw() {
         }
       }
 
-      // Small cyan 3D beads along standard curves
-      const regularBeadGeom = new THREE.SphereGeometry(1.6, 8, 8);
-      const regularBeadMat = new THREE.MeshBasicMaterial({ color: 0x0ea5e9 });
+      // Small beads along standard curves (discs instead of 3D spheres)
+      const regularBeadGeom = new THREE.CircleGeometry(1.6, 16);
+      const regularBeadMat = new THREE.MeshBasicMaterial({ color: 0x6b7280 });
       for (const p of pts) {
         const bead = new THREE.Mesh(regularBeadGeom, regularBeadMat);
         bead.position.set(p.x, p.y, 0.03);
@@ -660,7 +660,7 @@ function draw() {
       }
     }
 
-    // Draw valence 3+ Junction/End node spheres
+    // Draw valence 3+ Junction/End node discs
     let nodesToDraw = state.simplifySkeleton 
       ? state.skeletonData.simplifiedNodes 
       : state.skeletonData.junctionPoints;
@@ -671,22 +671,18 @@ function draw() {
 
     for (const jp of nodesToDraw) {
       const rad = jp.isEndPoint ? 4.2 : 5.5;
-      const nodeGeom = new THREE.SphereGeometry(rad, 16, 16);
-      const nodeMat = new THREE.MeshStandardMaterial({
-        color: jp.isEndPoint ? 0xdb2777 : 0xec4899,
-        emissive: jp.isEndPoint ? 0x831843 : 0x9d174d,
-        emissiveIntensity: 0.45,
-        roughness: 0.15,
-        metalness: 0.1
+      const nodeGeom = new THREE.CircleGeometry(rad, 32);
+      const nodeMat = new THREE.MeshBasicMaterial({
+        color: jp.isEndPoint ? 0x4b5563 : 0x374151
       });
       const nodeMesh = new THREE.Mesh(nodeGeom, nodeMat);
       nodeMesh.position.set(jp.x, jp.y, 0.035);
       meshesGroup.add(nodeMesh);
 
-      // Cyber concentric flat ring helper on floor plane around nodes
+      // Concentric flat ring helper on floor plane around nodes
       const ringGeom = new THREE.RingGeometry(rad * 1.5, rad * 1.8, 32);
       const ringMat = new THREE.MeshBasicMaterial({
-        color: jp.isEndPoint ? 0xdb2777 : 0xec4899,
+        color: jp.isEndPoint ? 0x4b5563 : 0x374151,
         transparent: true,
         opacity: 0.22,
         side: THREE.DoubleSide
@@ -702,17 +698,17 @@ function draw() {
         ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
         : state.skeletonData.simplifiedSegments;
 
-      const beadGeom = new THREE.SphereGeometry(2.4, 8, 8);
-      const beadMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White spine division beads
+      const beadGeom = new THREE.CircleGeometry(2.4, 16);
+      const beadMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White spine division discs
 
       const ribMat = new THREE.LineBasicMaterial({
-        color: 0xdb2777, // Vibrant pink dashed vector lines
+        color: 0x4b5563, // Slate grey rib vector lines
         transparent: true,
         opacity: 0.65
       });
 
-      const contactGeom = new THREE.SphereGeometry(2.2, 8, 8);
-      const contactMat = new THREE.MeshBasicMaterial({ color: 0xdb2777 });
+      const contactGeom = new THREE.CircleGeometry(2.2, 16);
+      const contactMat = new THREE.MeshBasicMaterial({ color: 0x4b5563 });
 
       const candidateRibs = [];
 
@@ -906,7 +902,7 @@ function draw() {
     // Outer flat ring outline
     const ringGeom = new THREE.RingGeometry(rad - 1, rad + 1, 64);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0x0ea5e9, // Sky Blue
+      color: 0x374151, // Dark Slate Grey
       transparent: true,
       opacity: 0.82,
       side: THREE.DoubleSide
@@ -918,7 +914,7 @@ function draw() {
     // Soft colored transparent interior glow disc
     const discGeom = new THREE.CircleGeometry(rad, 64);
     const discMat = new THREE.MeshBasicMaterial({
-      color: 0x0ea5e9,
+      color: 0x374151,
       transparent: true,
       opacity: 0.05,
       side: THREE.DoubleSide,
@@ -928,8 +924,8 @@ function draw() {
     disc.position.set(hp.x, hp.y, 0.04);
     meshesGroup.add(disc);
 
-    // Glowing core center sphere
-    const centerGeom = new THREE.SphereGeometry(3.6, 8, 8);
+    // Glowing core center disc
+    const centerGeom = new THREE.CircleGeometry(3.6, 16);
     const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const centerMesh = new THREE.Mesh(centerGeom, centerMat);
     centerMesh.position.set(hp.x, hp.y, 0.048);
@@ -938,11 +934,11 @@ function draw() {
     // Governors tangency line indicators
     if (state.showGovernors) {
       const govLineMat = new THREE.LineBasicMaterial({
-        color: 0xdb2777, // Vibrant pink
+        color: 0x4b5563, // Slate Grey
         linewidth: 1.5
       });
-      const govSphGeom = new THREE.SphereGeometry(2.5, 8, 8);
-      const govSphMat = new THREE.MeshBasicMaterial({ color: 0xdb2777 });
+      const govSphGeom = new THREE.CircleGeometry(2.5, 16);
+      const govSphMat = new THREE.MeshBasicMaterial({ color: 0x4b5563 });
 
       for (let i = 0; i < state.polygon.length; i++) {
         const v1 = state.polygon[i];
@@ -966,18 +962,16 @@ function draw() {
     }
   }
 
-  // 6. Interactive Polygon Vertices Drag Handles (Chrome Indigo Spheres)
+  // 6. Interactive Polygon Vertices Drag Handles (Chrome Indigo Discs)
   if (!state.isDrawing && state.polygon.length > 0) {
-    const handleGeom = new THREE.SphereGeometry(5.2, 16, 16);
-    const coreGeom = new THREE.SphereGeometry(1.8, 8, 8);
+    const handleGeom = new THREE.CircleGeometry(5.2, 32);
+    const coreGeom = new THREE.CircleGeometry(1.8, 16);
     const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
     for (let i = 0; i < state.polygon.length; i++) {
       const v = state.polygon[i];
-      const handleMat = new THREE.MeshStandardMaterial({
-        color: 0x4f46e5, // Royal Indigo
-        roughness: 0.15,
-        metalness: 0.2
+      const handleMat = new THREE.MeshBasicMaterial({
+        color: 0x374151, // Dark Slate Grey
       });
 
       const handle = new THREE.Mesh(handleGeom, handleMat);
@@ -985,7 +979,7 @@ function draw() {
       handle.userData = { isHandle: true, index: i }; // Raycast tag
       meshesGroup.add(handle);
 
-      // Embedded white core core
+      // Embedded white core
       const core = new THREE.Mesh(coreGeom, coreMat);
       core.position.set(v.x, v.y, 0.038);
       meshesGroup.add(core);
