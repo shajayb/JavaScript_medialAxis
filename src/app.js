@@ -1401,6 +1401,12 @@ function draw() {
     const innerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
     state.planarGraph.vertices.forEach((v, i) => {
+      // Restrict to exterior polygon boundary vertices only
+      const distData = distanceToPolygon(v, state.polygon);
+      if (distData.distance > 0.05) {
+        return; // Skip rendering drag handles for interior vertices
+      }
+
       const vertexMat = new THREE.MeshBasicMaterial({
         color: 0x4f46e5, // Elegant indigo matching edges
         transparent: true,
@@ -1813,12 +1819,16 @@ function handleMouseDown(e) {
       let clickedGraphObject = false;
       for (const hit of intersects) {
         if (hit.object.userData && hit.object.userData.isGraphVertex) {
-          state.draggedGraphVertexIdx = hit.object.userData.index;
-          controls.enabled = false;
-          document.getElementById('status-dot').classList.add('loading');
-          document.getElementById('status-text').innerText = `Dragging graph vertex ${state.draggedGraphVertexIdx}...`;
-          clickedGraphObject = true;
-          break;
+          const vIdx = hit.object.userData.index;
+          const v = state.planarGraph.vertices[vIdx];
+          if (v && distanceToPolygon(v, state.polygon).distance < 0.05) {
+            state.draggedGraphVertexIdx = vIdx;
+            controls.enabled = false;
+            document.getElementById('status-dot').classList.add('loading');
+            document.getElementById('status-text').innerText = `Dragging graph vertex ${state.draggedGraphVertexIdx}...`;
+            clickedGraphObject = true;
+            break;
+          }
         }
       }
       
