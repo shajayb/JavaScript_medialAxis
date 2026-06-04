@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Interactive 2D Medial Axis Transform (MAT) Visualizer</title>
   <meta name="description" content="An interactive real-time visualizer for the fast sampling-based 2D Medial Axis Transform algorithm. Draw custom polygons and inspect skeleton branches, junction points, and maximal inscribed circles.">
-  <script type="module" crossorigin src="/assets/index-DbhitR7g.js"></script>
+  <script type="module" crossorigin src="/assets/index-Da5eDKb5.js"></script>
   <link rel="stylesheet" crossorigin href="/assets/index-KRynAqLY.css">
 </head>
 <body>
@@ -245,62 +245,72 @@
         </section>
 
         <!-- Other settings section -->
-        <section class="control-group">
-          <h3>Interactive Helpers</h3>
-          <!-- Show Inscribed Circle on Hover -->
-          <div class="toggle-container" id="toggle-hover-circle-container">
-            <div class="toggle-details">
-              <span class="toggle-label">Interactive Circles</span>
-              <span class="toggle-sub">Hover near axis to see maximal inscribed discs</span>
+        <section class="control-group collapsible collapsed" id="section-interactive-helpers">
+          <h3 class="collapsible-header" id="header-interactive-helpers">
+            Interactive Helpers
+            <span class="chevron">▼</span>
+          </h3>
+          <div class="collapsible-content" id="content-interactive-helpers">
+            <!-- Show Inscribed Circle on Hover -->
+            <div class="toggle-container" id="toggle-hover-circle-container" style="margin-top: 10px;">
+              <div class="toggle-details">
+                <span class="toggle-label">Interactive Circles</span>
+                <span class="toggle-sub">Hover near axis to see maximal inscribed discs</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chk-hover-circle" checked>
+                <span class="slider-switch"></span>
+              </label>
             </div>
-            <label class="switch">
-              <input type="checkbox" id="chk-hover-circle" checked>
-              <span class="slider-switch"></span>
-            </label>
-          </div>
 
-          <!-- Show Governors -->
-          <div class="toggle-container" id="toggle-governors-container">
-            <div class="toggle-details">
-              <span class="toggle-label">Render Governors</span>
-              <span class="toggle-sub">Draw vectors linking center to tangency points</span>
+            <!-- Show Governors -->
+            <div class="toggle-container" id="toggle-governors-container" style="margin-top: 10px;">
+              <div class="toggle-details">
+                <span class="toggle-label">Render Governors</span>
+                <span class="toggle-sub">Draw vectors linking center to tangency points</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chk-show-governors" checked>
+                <span class="slider-switch"></span>
+              </label>
             </div>
-            <label class="switch">
-              <input type="checkbox" id="chk-show-governors" checked>
-              <span class="slider-switch"></span>
-            </label>
           </div>
         </section>
 
         <!-- Rhino 3DM IO -->
-        <section class="control-group">
-          <h3>Rhino 3DM Integration</h3>
-          <div style="display: flex; flex-direction: column; gap: 8px;">
-            <input type="file" id="rhino-file-input" accept=".3dm" style="display: none;" />
-            <button class="btn btn-primary" id="btn-upload-rhino" style="width: 100%; justify-content: center;">Load .3DM File</button>
-            
-            <div id="rhino-file-info" style="display: none; padding: 10px; background: rgba(0, 0, 0, 0.03); border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.8rem;">
-              <div style="font-weight: 600;" id="rhino-filename">Filename.3dm</div>
-              <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;" id="rhino-object-count">0 objects found</div>
+        <section class="control-group collapsible collapsed" id="section-rhino-integration">
+          <h3 class="collapsible-header" id="header-rhino-integration">
+            Rhino 3DM Integration
+            <span class="chevron">▼</span>
+          </h3>
+          <div class="collapsible-content" id="content-rhino-integration">
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+              <input type="file" id="rhino-file-input" accept=".3dm" style="display: none;" />
+              <button class="btn btn-primary" id="btn-upload-rhino" style="width: 100%; justify-content: center;">Load .3DM File</button>
+              
+              <div id="rhino-file-info" style="display: none; padding: 10px; background: rgba(0, 0, 0, 0.03); border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.8rem;">
+                <div style="font-weight: 600;" id="rhino-filename">Filename.3dm</div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;" id="rhino-object-count">0 objects found</div>
+              </div>
+              
+              <label style="display: none; font-size: 0.75rem; font-weight: 600; margin-top: 4px;" id="lbl-rhino-layers">Select Layers to Load</label>
+              <div id="rhino-layers-container" class="layers-scroll-container" style="display: none; max-height: 120px; overflow-y: auto; border: 1px solid var(--border-color); padding: 6px; border-radius: 8px; background: rgba(0,0,0,0.01);">
+                <!-- Checkboxes will be populated dynamically -->
+              </div>
+              
+              <div id="rhino-actions" style="display: none; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <button class="btn" id="btn-load-rhino-layers" style="padding: 6px 12px; font-size: 0.8rem; justify-content: center;">Load Layers</button>
+                <button class="btn" id="btn-clear-rhino" style="padding: 6px 12px; font-size: 0.8rem; justify-content: center; color: #ef4444; border-color: rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05);">Clear</button>
+              </div>
+              
+              <div style="border-top: 1px solid var(--border-color); margin: 4px 0;"></div>
+              
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <label style="font-size: 0.75rem; font-weight: 600;">Export Filename</label>
+                <input type="text" id="rhino-export-filename" value="medial_axis_export.3dm" style="padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: #fff; font-size: 0.8rem; width: 100%; box-sizing: border-box;" />
+              </div>
+              <button class="btn btn-primary" id="btn-export-rhino" style="width: 100%; justify-content: center;">Export to 3DM</button>
             </div>
-            
-            <label style="display: none; font-size: 0.75rem; font-weight: 600; margin-top: 4px;" id="lbl-rhino-layers">Select Layers to Load</label>
-            <div id="rhino-layers-container" class="layers-scroll-container" style="display: none; max-height: 120px; overflow-y: auto; border: 1px solid var(--border-color); padding: 6px; border-radius: 8px; background: rgba(0,0,0,0.01);">
-              <!-- Checkboxes will be populated dynamically -->
-            </div>
-            
-            <div id="rhino-actions" style="display: none; grid-template-columns: 1fr 1fr; gap: 8px;">
-              <button class="btn" id="btn-load-rhino-layers" style="padding: 6px 12px; font-size: 0.8rem; justify-content: center;">Load Layers</button>
-              <button class="btn" id="btn-clear-rhino" style="padding: 6px 12px; font-size: 0.8rem; justify-content: center; color: #ef4444; border-color: rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05);">Clear</button>
-            </div>
-            
-            <div style="border-top: 1px solid var(--border-color); margin: 4px 0;"></div>
-            
-            <div style="display: flex; flex-direction: column; gap: 4px;">
-              <label style="font-size: 0.75rem; font-weight: 600;">Export Filename</label>
-              <input type="text" id="rhino-export-filename" value="medial_axis_export.3dm" style="padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: #fff; font-size: 0.8rem; width: 100%; box-sizing: border-box;" />
-            </div>
-            <button class="btn btn-primary" id="btn-export-rhino" style="width: 100%; justify-content: center;">Export to 3DM</button>
           </div>
         </section>
 

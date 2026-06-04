@@ -1518,6 +1518,24 @@ function setupEventListeners() {
     });
   }
 
+  // Collapsible Interactive Helpers
+  const headerHelpers = document.getElementById('header-interactive-helpers');
+  const sectionHelpers = document.getElementById('section-interactive-helpers');
+  if (headerHelpers && sectionHelpers) {
+    headerHelpers.addEventListener('click', () => {
+      sectionHelpers.classList.toggle('collapsed');
+    });
+  }
+
+  // Collapsible Rhino 3DM Integration
+  const headerRhino = document.getElementById('header-rhino-integration');
+  const sectionRhino = document.getElementById('section-rhino-integration');
+  if (headerRhino && sectionRhino) {
+    headerRhino.addEventListener('click', () => {
+      sectionRhino.classList.toggle('collapsed');
+    });
+  }
+
   // Collapsible Structural Workflow nested block
   const btnCollapseRibs = document.getElementById('btn-collapse-ribs-workflow');
   const dependentsBlock = document.getElementById('ribs-workflow-dependents');
