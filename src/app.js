@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MedialAxisTransform } from './medialAxis.js';
 import { Vector2D } from './utils/vector2d.js';
-import { distanceToPolygon, closestPointOnSegment, pointInPolygon, mergePolygonCells, isEdgeActive } from './utils/geometry.js';
+import { distanceToPolygon, closestPointOnSegment, pointInPolygon, mergePolygonCells } from './utils/geometry.js';
 import { RhinoManager } from './utils/RhinoManager.js';
 import { PlanarGraph } from './utils/planarGraph.js';
 
@@ -894,56 +894,62 @@ function draw() {
   }
 
   // 4. Draw Medial Axis Skeleton
-  if (state.showSkeleton && state.polygon.length >= 3 && state.planarGraph) {
-    const isCurve = !state.simplifySkeleton;
-    const lineMat = new THREE.LineBasicMaterial({
-      color: isCurve ? 0x6b7280 : 0x374151, // Medium Slate Grey vs Dark Slate Grey
-      transparent: isCurve,
-      opacity: isCurve ? 0.65 : 1.0,
-      linewidth: isCurve ? 1.5 : 3.5
-    });
+  if (state.showSkeleton && state.polygon.length >= 3) {
+    const pts = state.skeletonData.regularPoints;
 
-    state.planarGraph.edges.forEach(edge => {
-      if (edge[2] === 'skeleton') {
-        const ptU = state.planarGraph.vertices[edge[0]];
-        const ptV = state.planarGraph.vertices[edge[1]];
-        if (ptU && ptV) {
-          if (isEdgeActive(ptU, ptV, state.structuralBays)) {
-            const linePts = [
-              new THREE.Vector3(ptU.x, ptU.y, isCurve ? 0.025 : 0.035),
-              new THREE.Vector3(ptV.x, ptV.y, isCurve ? 0.025 : 0.035)
-            ];
-            const geom = new THREE.BufferGeometry().setFromPoints(linePts);
-            const line = new THREE.Line(geom, lineMat);
-            meshesGroup.add(line);
+    if (state.simplifySkeleton) {
+      // Render Simplified MST straight branches as elegant thick lines
+      const segmentsToDraw = state.pruneBranches
+        ? state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
+        : state.skeletonData.simplifiedSegments;
+
+      const simplifiedLineMat = new THREE.LineBasicMaterial({
+        color: 0x374151, // Dark Slate Grey
+        linewidth: 3.5
+      });
+
+      for (const seg of segmentsToDraw) {
+        const linePts = [
+          new THREE.Vector3(seg.start.x, seg.start.y, 0.035),
+          new THREE.Vector3(seg.end.x, seg.end.y, 0.035)
+        ];
+        const geom = new THREE.BufferGeometry().setFromPoints(linePts);
+        const line = new THREE.Line(geom, simplifiedLineMat);
+        meshesGroup.add(line);
+      }
+    } else {
+      // Render Default curved skeleton lines
+      const samples = state.samplesPerEdge;
+      const curveMat = new THREE.LineBasicMaterial({
+        color: 0x6b7280, // Medium Slate Grey
+        transparent: true,
+        opacity: 0.65,
+        linewidth: 1.5
+      });
+
+      for (let i = 0; i < state.polygon.length; i++) {
+        const pointsVec3 = [];
+        for (let j = 0; j < samples; j++) {
+          const idx = i * samples + j;
+          if (pts[idx]) {
+            pointsVec3.push(new THREE.Vector3(pts[idx].x, pts[idx].y, 0.025));
           }
         }
+        if (pointsVec3.length >= 2) {
+          const curveGeom = new THREE.BufferGeometry().setFromPoints(pointsVec3);
+          const line = new THREE.Line(curveGeom, curveMat);
+          meshesGroup.add(line);
+        }
       }
-    });
 
-    if (isCurve) {
       // Small beads along standard curves (discs instead of 3D spheres)
       const regularBeadGeom = new THREE.CircleGeometry(0.12, 16);
       const regularBeadMat = new THREE.MeshBasicMaterial({ color: 0x6b7280 });
-      
-      const activeVerts = new Set();
-      state.planarGraph.edges.forEach(edge => {
-        if (edge[2] === 'skeleton') {
-          const ptU = state.planarGraph.vertices[edge[0]];
-          const ptV = state.planarGraph.vertices[edge[1]];
-          if (isEdgeActive(ptU, ptV, state.structuralBays)) {
-            activeVerts.add(edge[0]);
-            activeVerts.add(edge[1]);
-          }
-        }
-      });
-      
-      activeVerts.forEach(vIdx => {
-        const p = state.planarGraph.vertices[vIdx];
+      for (const p of pts) {
         const bead = new THREE.Mesh(regularBeadGeom, regularBeadMat);
         bead.position.set(p.x, p.y, 0.03);
         meshesGroup.add(bead);
-      });
+      }
     }
 
     // Draw valence 3+ Junction/End node discs
@@ -956,32 +962,13 @@ function draw() {
     }
 
     for (const jp of nodesToDraw) {
-      // Find matching vertex in planarGraph
-      const nodeIdx = state.planarGraph.vertices.findIndex((_, idx) => {
-        return state.planarGraph.originalVertices[idx].dist(jp) < 1e-3;
-      });
-      
-      let nodePos = jp;
-      if (nodeIdx !== -1) {
-        nodePos = state.planarGraph.vertices[nodeIdx];
-        
-        // Only render node if it is connected to at least one active skeleton edge
-        const hasActiveEdge = state.planarGraph.edges.some(edge => {
-          if (edge[2] !== 'skeleton') return false;
-          const ptU = state.planarGraph.vertices[edge[0]];
-          const ptV = state.planarGraph.vertices[edge[1]];
-          return (edge[0] === nodeIdx || edge[1] === nodeIdx) && isEdgeActive(ptU, ptV, state.structuralBays);
-        });
-        if (!hasActiveEdge) continue;
-      }
-
       const rad = jp.isEndPoint ? 0.3 : 0.45; // Meter radius (smaller black circles)
       const nodeGeom = new THREE.CircleGeometry(rad, 32);
       const nodeMat = new THREE.MeshBasicMaterial({
         color: jp.isEndPoint ? 0x4b5563 : 0x374151
       });
       const nodeMesh = new THREE.Mesh(nodeGeom, nodeMat);
-      nodeMesh.position.set(nodePos.x, nodePos.y, 0.035);
+      nodeMesh.position.set(jp.x, jp.y, 0.035);
       meshesGroup.add(nodeMesh);
 
       // Concentric flat dashed (dotted) circle helper around nodes
@@ -990,7 +977,7 @@ function draw() {
       const circleRadius = rad * 1.65;
       for (let s = 0; s <= segments; s++) {
         const theta = (s / segments) * Math.PI * 2;
-        circlePts.push(new THREE.Vector3(nodePos.x + Math.cos(theta) * circleRadius, nodePos.y + Math.sin(theta) * circleRadius, 0.035));
+        circlePts.push(new THREE.Vector3(jp.x + Math.cos(theta) * circleRadius, jp.y + Math.sin(theta) * circleRadius, 0.035));
       }
       const ringGeom = new THREE.BufferGeometry().setFromPoints(circlePts);
       const ringMat = new THREE.LineDashedMaterial({
@@ -1007,28 +994,8 @@ function draw() {
 
     // Render Structural Ribs dropping columns to boundary
     if (state.showRibs) {
-      const activeRibs = [];
-      state.planarGraph.edges.forEach(edge => {
-        if (edge[2] && edge[2].startsWith('rib_')) {
-          const ptU = state.planarGraph.vertices[edge[0]];
-          const ptV = state.planarGraph.vertices[edge[1]];
-          if (isEdgeActive(ptU, ptV, state.structuralBays)) {
-            const isSkeletonVertex = (vIdx) => {
-              return state.planarGraph.edges.some(e => (e[0] === vIdx || e[1] === vIdx) && e[2] === 'skeleton');
-            };
-            
-            let sourcePt = ptU;
-            let targetPt = ptV;
-            if (isSkeletonVertex(ptV)) {
-              sourcePt = ptV;
-              targetPt = ptU;
-            }
-            
-            activeRibs.push({ source: sourcePt, target: targetPt });
-          }
-        }
-      });
-      appContext.acceptedRibsCache = activeRibs; // Cache for 3DM export
+      const acceptedRibs = computeAcceptedRibs();
+      appContext.acceptedRibsCache = acceptedRibs; // Cache for 3DM export
 
       const beadGeom = new THREE.CircleGeometry(0.15, 16);
       const beadMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White spine division discs
@@ -1043,14 +1010,14 @@ function draw() {
       const contactMat = new THREE.MeshBasicMaterial({ color: 0x4b5563 });
 
       // Draw spine beads
-      for (const rib of activeRibs) {
+      for (const rib of acceptedRibs) {
         const bead = new THREE.Mesh(beadGeom, beadMat);
         bead.position.set(rib.source.x, rib.source.y, 0.038);
         meshesGroup.add(bead);
       }
 
-      // Draw all active ribs
-      for (const rib of activeRibs) {
+      // Draw all accepted ribs
+      for (const rib of acceptedRibs) {
         const rPts = [
           new THREE.Vector3(rib.source.x, rib.source.y, 0.038),
           new THREE.Vector3(rib.target.x, rib.target.y, 0.038)

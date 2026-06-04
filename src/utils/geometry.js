@@ -191,24 +191,3 @@ export function cleanupCollinear(points) {
   }
   return result;
 }
-
-// Check if a segment (pt1, pt2) is active (bounds at least one active cell/bay)
-export function isEdgeActive(pt1, pt2, activeBays) {
-  const tol = 1e-3;
-  for (const bay of activeBays) {
-    for (let i = 0; i < bay.length; i++) {
-      const v1 = bay[i];
-      const v2 = bay[(i + 1) % bay.length];
-      
-      const cp1 = closestPointOnSegment(pt1, v1, v2);
-      if (pt1.dist(cp1) < tol) {
-        const cp2 = closestPointOnSegment(pt2, v1, v2);
-        if (pt2.dist(cp2) < tol) {
-          return true;
-        }
-      }
-    }
-  }
-  return false;
-}
-

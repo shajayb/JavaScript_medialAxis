@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { isEdgeActive } from './geometry.js';
 
 export class RhinoManager {
     constructor(appContext) {
@@ -171,7 +170,8 @@ export class RhinoManager {
         console.log(`[RhinoManager] Triggering background export to .3dm...`);
         
         // 1. Gather active polygon boundary
-        const boundary = this.appContext.state.polygon.map(v => [v.x, v.y, 0.0]);        
+        const boundary = this.appContext.state.polygon.map(v => [v.x, v.y, 0.0]);
+        
         // 2. Gather active medial axis curves
         const skeleton = [];
         if (this.appContext.state.showSkeleton && this.appContext.state.polygon.length >= 3) {
@@ -181,12 +181,10 @@ export class RhinoManager {
                     if (edge[2] === 'skeleton') {
                         const ptU = graph.vertices[edge[0]];
                         const ptV = graph.vertices[edge[1]];
-                        if (isEdgeActive(ptU, ptV, this.appContext.state.structuralBays)) {
-                            skeleton.push([
-                                [ptU.x, ptU.y, 0.0],
-                                [ptV.x, ptV.y, 0.0]
-                            ]);
-                        }
+                        skeleton.push([
+                            [ptU.x, ptU.y, 0.0],
+                            [ptV.x, ptV.y, 0.0]
+                        ]);
                     }
                 });
             } else {
@@ -231,12 +229,10 @@ export class RhinoManager {
                     if (edge[2] && edge[2].startsWith('rib_')) {
                         const ptU = graph.vertices[edge[0]];
                         const ptV = graph.vertices[edge[1]];
-                        if (isEdgeActive(ptU, ptV, this.appContext.state.structuralBays)) {
-                            ribs.push({
-                                start: [ptU.x, ptU.y, 0.0],
-                                end: [ptV.x, ptV.y, 0.0]
-                            });
-                        }
+                        ribs.push({
+                            start: [ptU.x, ptU.y, 0.0],
+                            end: [ptV.x, ptV.y, 0.0]
+                        });
                     }
                 });
             } else if (this.appContext.acceptedRibsCache) {
@@ -260,33 +256,16 @@ export class RhinoManager {
             });
         }
         // Also export inscribed circles at all simplified internal nodes!
-        if (this.appContext.state.polygon.length >= 3 && this.appContext.state.skeletonData.simplifiedNodes && this.appContext.state.planarGraph) {
-            const graph = this.appContext.state.planarGraph;
+        if (this.appContext.state.polygon.length >= 3 && this.appContext.state.skeletonData.simplifiedNodes) {
             const internalNodes = this.appContext.state.skeletonData.simplifiedNodes.filter(n => !n.isEndPoint);
             internalNodes.forEach(node => {
-                const nodeIdx = graph.vertices.findIndex((_, idx) => {
-                    return graph.originalVertices[idx].dist(node) < 1e-3;
-                });
-                
-                let nodePos = node;
-                if (nodeIdx !== -1) {
-                    nodePos = graph.vertices[nodeIdx];
-                    
-                    const hasActiveEdge = graph.edges.some(edge => {
-                        if (edge[2] !== 'skeleton') return false;
-                        const ptU = graph.vertices[edge[0]];
-                        const ptV = graph.vertices[edge[1]];
-                        return (edge[0] === nodeIdx || edge[1] === nodeIdx) && isEdgeActive(ptU, ptV, this.appContext.state.structuralBays);
-                    });
-                    if (!hasActiveEdge) return;
-                }
-                
                 circles.push({
-                    center: [nodePos.x, nodePos.y, 0.0],
-                    radius: node.radius || 5.0
+                    center: [node.x, node.y, 0.0],
+                    radius: node.radius || 5.0 // Fallback if radius not set
                 });
             });
         }
+        
         // 5. Gather structural bays/cells (if computed)
         const bays = [];
         if (this.appContext.state.structuralBays) {
