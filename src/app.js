@@ -805,10 +805,6 @@ function recomputeMAT() {
   if (containerRibs) {
     containerRibs.style.display = state.showRibs ? 'block' : 'none';
   }
-  const containerWorkflow = document.getElementById('ribs-workflow-dependents');
-  if (containerWorkflow) {
-    containerWorkflow.style.display = state.showRibs ? 'block' : 'none';
-  }
 
   // Update Status HUD
   document.getElementById('stats-render-time').innerText = `Computation: ${state.computeTime.toFixed(1)}ms`;
@@ -1522,6 +1518,17 @@ function setupEventListeners() {
     });
   }
 
+  // Collapsible Structural Workflow nested block
+  const btnCollapseRibs = document.getElementById('btn-collapse-ribs-workflow');
+  const dependentsBlock = document.getElementById('ribs-workflow-dependents');
+  if (btnCollapseRibs && dependentsBlock) {
+    btnCollapseRibs.addEventListener('click', () => {
+      const isCollapsed = dependentsBlock.style.display === 'none';
+      dependentsBlock.style.display = isCollapsed ? 'block' : 'none';
+      btnCollapseRibs.classList.toggle('collapsed', !isCollapsed);
+    });
+  }
+
   // Camera View controls
   document.getElementById('btn-view-perspective').addEventListener('click', () => setCameraView('perspective'));
   document.getElementById('btn-view-top').addEventListener('click', () => setCameraView('top'));
@@ -1580,10 +1587,6 @@ function setupEventListeners() {
       state.simplifySkeleton = true;
       const chkSimplify = document.getElementById('chk-simplify-skeleton');
       if (chkSimplify) chkSimplify.checked = true;
-    }
-    const containerWorkflow = document.getElementById('ribs-workflow-dependents');
-    if (containerWorkflow) {
-      containerWorkflow.style.display = state.showRibs ? 'block' : 'none';
     }
     recomputeMAT();
   });

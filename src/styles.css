@@ -719,3 +719,7 @@ input:checked + .slider-switch:before {
   transition: all 0.3s ease-in-out;
 }
 
+.btn-collapse-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+

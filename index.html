@@ -167,19 +167,24 @@
           <h3>Structural Workflow</h3>
 
           <!-- Step 1: Draw Structural Ribs -->
-          <div class="toggle-container" id="toggle-ribs-container">
-            <div class="toggle-details">
+          <div class="toggle-container" id="toggle-ribs-container" style="display: flex; align-items: center; justify-content: space-between;">
+            <div class="toggle-details" style="flex: 1;">
               <span class="toggle-label">Draw Structural Ribs</span>
               <span class="toggle-sub">Draws perpendicular columns/ribs to boundary</span>
             </div>
-            <label class="switch">
-              <input type="checkbox" id="chk-show-ribs">
-              <span class="slider-switch"></span>
-            </label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label class="switch">
+                <input type="checkbox" id="chk-show-ribs">
+                <span class="slider-switch"></span>
+              </label>
+              <button class="btn-collapse-arrow" id="btn-collapse-ribs-workflow" aria-label="Collapse workflow" style="background: none; border: none; padding: 4px; cursor: pointer; color: var(--text-muted); font-size: 0.85rem; display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease; outline: none; margin-left: 2px;">
+                ▼
+              </button>
+            </div>
           </div>
 
           <!-- Nested dependents block -->
-          <div class="workflow-nested" id="ribs-workflow-dependents" style="display: none; margin-left: 15px; border-left: 2px solid var(--border-color); padding-left: 12px; margin-top: 10px;">
+          <div class="workflow-nested" id="ribs-workflow-dependents" style="margin-left: 15px; border-left: 2px solid var(--border-color); padding-left: 12px; margin-top: 10px; display: block;">
             
             <!-- Step 2: Prune Corner Branches -->
             <div class="toggle-container" id="toggle-prune-container" style="margin-bottom: 10px;">
