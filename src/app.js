@@ -23,6 +23,11 @@ const state = {
   editBaysMode: false,
   selectedBayIndices: [],
   bayEdits: [], // Array of { type: 'delete'|'merge', points: Vector2D[] }
+  graphVertexOverrides: new Map(),
+  draggedGraphVertexIdx: -1,
+  draggedGraphEdgeIdx: -1,
+  dragStartMousePos: null,
+  planarGraph: null,
   hoverCircle: true,
   showGovernors: true,
   isDrawing: false,
@@ -526,7 +531,8 @@ function recomputeMAT() {
 
   // Build Planar Graph to extract structural bays/enclosed cells
   if (state.polygon.length >= 3) {
-    const graph = new PlanarGraph(1e-3);
+    const graph = new PlanarGraph(1e-3, state.graphVertexOverrides);
+    state.planarGraph = graph;
     
     // A. Add boundary edges
     for (let i = 0; i < state.polygon.length; i++) {
@@ -1155,7 +1161,7 @@ function draw() {
   }
 
   // 6. Interactive Polygon Vertices Drag Handles (Chrome Indigo Discs - Scaled down for meters)
-  if (!state.isDrawing && state.polygon.length > 0) {
+  if (!state.isDrawing && !state.editBaysMode && state.polygon.length > 0) {
     const handleGeom = new THREE.CircleGeometry(1.0, 32);
     const coreGeom = new THREE.CircleGeometry(0.3, 16);
     const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
@@ -1176,6 +1182,57 @@ function draw() {
       core.position.set(v.x, v.y, 0.038);
       meshesGroup.add(core);
     }
+  }
+
+  // 7. Interactive Graph Vertices and Edges Drag Handles in Edit Bays Mode
+  if (!state.isDrawing && state.editBaysMode && state.showBays && state.planarGraph) {
+    // A. Render selectable Graph Edges
+    const edgeMat = new THREE.LineBasicMaterial({
+      color: 0x4f46e5, // Elegant indigo color
+      linewidth: 3.5,
+      transparent: true,
+      opacity: 0.8
+    });
+    
+    state.planarGraph.edges.forEach((edge, idx) => {
+      const u = edge[0];
+      const v = edge[1];
+      const ptU = state.planarGraph.vertices[u];
+      const ptV = state.planarGraph.vertices[v];
+      if (ptU && ptV) {
+        const edgePts = [
+          new THREE.Vector3(ptU.x, ptU.y, 0.032),
+          new THREE.Vector3(ptV.x, ptV.y, 0.032)
+        ];
+        const geom = new THREE.BufferGeometry().setFromPoints(edgePts);
+        const line = new THREE.Line(geom, edgeMat);
+        line.userData = { isGraphEdge: true, index: idx, u, v };
+        meshesGroup.add(line);
+      }
+    });
+
+    // B. Render draggable Graph Vertices
+    const vertexGeom = new THREE.CircleGeometry(0.5, 32); // 0.5m radius handle
+    const innerGeom = new THREE.CircleGeometry(0.18, 16);
+    const innerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+    state.planarGraph.vertices.forEach((v, i) => {
+      const vertexMat = new THREE.MeshBasicMaterial({
+        color: 0x4f46e5, // Elegant indigo matching edges
+        transparent: true,
+        opacity: 0.95
+      });
+      
+      const vMesh = new THREE.Mesh(vertexGeom, vertexMat);
+      vMesh.position.set(v.x, v.y, 0.035);
+      vMesh.userData = { isGraphVertex: true, index: i };
+      meshesGroup.add(vMesh);
+
+      // Embedded white inner core
+      const innerMesh = new THREE.Mesh(innerGeom, innerMat);
+      innerMesh.position.set(v.x, v.y, 0.039);
+      meshesGroup.add(innerMesh);
+    });
   }
 }
 
@@ -1341,6 +1398,7 @@ function setupEventListeners() {
 
   document.getElementById('btn-reset-bay-edits').addEventListener('click', () => {
     state.bayEdits = [];
+    state.graphVertexOverrides.clear();
     state.selectedBayIndices = [];
     updateBaySelectionUI();
     recomputeMAT();
@@ -1559,21 +1617,52 @@ function handleMouseDown(e) {
     if (state.editBaysMode) {
       const target = getIntersectionPoint(e);
       const worldPos = new Vector2D(target.x, target.y);
-      const clickedIdx = state.structuralBays.findIndex(bay => pointInPolygon(worldPos, bay));
-      if (clickedIdx !== -1) {
-        const selIdx = state.selectedBayIndices.indexOf(clickedIdx);
-        if (selIdx !== -1) {
-          state.selectedBayIndices.splice(selIdx, 1);
-        } else {
-          state.selectedBayIndices.push(clickedIdx);
+      
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      
+      raycaster.setFromCamera(mouse, cameraActive);
+      raycaster.params.Line.threshold = 0.4;
+      const intersects = raycaster.intersectObjects(meshesGroup.children);
+      
+      let clickedGraphObject = false;
+      for (const hit of intersects) {
+        if (hit.object.userData && hit.object.userData.isGraphVertex) {
+          state.draggedGraphVertexIdx = hit.object.userData.index;
+          controls.enabled = false;
+          document.getElementById('status-dot').classList.add('loading');
+          document.getElementById('status-text').innerText = `Dragging graph vertex ${state.draggedGraphVertexIdx}...`;
+          clickedGraphObject = true;
+          break;
+        } else if (hit.object.userData && hit.object.userData.isGraphEdge) {
+          state.draggedGraphEdgeIdx = hit.object.userData.index;
+          state.dragStartMousePos = worldPos;
+          controls.enabled = false;
+          document.getElementById('status-dot').classList.add('loading');
+          document.getElementById('status-text').innerText = `Dragging graph edge ${state.draggedGraphEdgeIdx}...`;
+          clickedGraphObject = true;
+          break;
         }
-        
-        const btnCombine = document.getElementById('btn-combine-bays');
-        const btnDelete = document.getElementById('btn-delete-bays');
-        if (btnCombine) btnCombine.disabled = state.selectedBayIndices.length < 2;
-        if (btnDelete) btnDelete.disabled = state.selectedBayIndices.length === 0;
+      }
+      
+      if (!clickedGraphObject) {
+        const clickedIdx = state.structuralBays.findIndex(bay => pointInPolygon(worldPos, bay));
+        if (clickedIdx !== -1) {
+          const selIdx = state.selectedBayIndices.indexOf(clickedIdx);
+          if (selIdx !== -1) {
+            state.selectedBayIndices.splice(selIdx, 1);
+          } else {
+            state.selectedBayIndices.push(clickedIdx);
+          }
+          
+          const btnCombine = document.getElementById('btn-combine-bays');
+          const btnDelete = document.getElementById('btn-delete-bays');
+          if (btnCombine) btnCombine.disabled = state.selectedBayIndices.length < 2;
+          if (btnDelete) btnDelete.disabled = state.selectedBayIndices.length === 0;
 
-        draw();
+          draw();
+        }
       }
       return; // Prevent vertex dragging/drawing while editing bays
     }
@@ -1630,7 +1719,29 @@ function handleMouseMove(e) {
   const worldPos = new Vector2D(target.x, target.y);
   state.mouseWorldPos = worldPos;
 
-  if (state.draggedVertexIdx !== -1) {
+  if (state.draggedGraphVertexIdx !== -1 && state.planarGraph) {
+    const origPt = state.planarGraph.originalVertices[state.draggedGraphVertexIdx];
+    state.graphVertexOverrides.set(`${origPt.x.toFixed(4)},${origPt.y.toFixed(4)}`, worldPos);
+    recomputeMAT();
+  } else if (state.draggedGraphEdgeIdx !== -1 && state.planarGraph && state.dragStartMousePos) {
+    const delta = worldPos.sub(state.dragStartMousePos);
+    const edge = state.planarGraph.edges[state.draggedGraphEdgeIdx];
+    
+    // Move endpoint u
+    const origPtU = state.planarGraph.originalVertices[edge[0]];
+    const currentPtU = state.planarGraph.vertices[edge[0]];
+    const newPtU = currentPtU.add(delta);
+    state.graphVertexOverrides.set(`${origPtU.x.toFixed(4)},${origPtU.y.toFixed(4)}`, newPtU);
+
+    // Move endpoint v
+    const origPtV = state.planarGraph.originalVertices[edge[1]];
+    const currentPtV = state.planarGraph.vertices[edge[1]];
+    const newPtV = currentPtV.add(delta);
+    state.graphVertexOverrides.set(`${origPtV.x.toFixed(4)},${origPtV.y.toFixed(4)}`, newPtV);
+
+    state.dragStartMousePos = worldPos;
+    recomputeMAT();
+  } else if (state.draggedVertexIdx !== -1) {
     // Drag handle: Update vertex position in world coordinates
     state.polygon[state.draggedVertexIdx] = worldPos;
     recomputeMAT();
@@ -1671,7 +1782,18 @@ function handleMouseMove(e) {
 }
 
 function handleMouseUp() {
-  if (state.draggedVertexIdx !== -1) {
+  if (state.draggedGraphVertexIdx !== -1) {
+    state.draggedGraphVertexIdx = -1;
+    controls.enabled = true;
+    document.getElementById('status-dot').classList.remove('loading');
+    recomputeMAT();
+  } else if (state.draggedGraphEdgeIdx !== -1) {
+    state.draggedGraphEdgeIdx = -1;
+    state.dragStartMousePos = null;
+    controls.enabled = true;
+    document.getElementById('status-dot').classList.remove('loading');
+    recomputeMAT();
+  } else if (state.draggedVertexIdx !== -1) {
     state.draggedVertexIdx = -1;
     controls.enabled = true; // Re-enable camera rotation
     document.getElementById('status-dot').classList.remove('loading');
@@ -1682,6 +1804,19 @@ function handleMouseUp() {
 function handleMouseLeave() {
   state.mouseWorldPos = null;
   state.hoveredMedialPoint = null;
+  if (state.draggedGraphVertexIdx !== -1) {
+    state.draggedGraphVertexIdx = -1;
+    controls.enabled = true;
+    document.getElementById('status-dot').classList.remove('loading');
+    recomputeMAT();
+  }
+  if (state.draggedGraphEdgeIdx !== -1) {
+    state.draggedGraphEdgeIdx = -1;
+    state.dragStartMousePos = null;
+    controls.enabled = true;
+    document.getElementById('status-dot').classList.remove('loading');
+    recomputeMAT();
+  }
   if (state.draggedVertexIdx !== -1) {
     state.draggedVertexIdx = -1;
     controls.enabled = true;

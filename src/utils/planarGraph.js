@@ -7,10 +7,30 @@ import { closestPointOnSegment } from './geometry.js';
  * as structural bays.
  */
 export class PlanarGraph {
-  constructor(vertexTolerance = 1e-3) {
-    this.vertices = []; // Array of Vector2D
-    this.edges = []; // Array of index pairs [u, v]
+  constructor(vertexTolerance = 1e-3, vertexOverrides = new Map()) {
+    this.vertices = []; // Array of Vector2D (current positions)
+    this.originalVertices = []; // Array of Vector2D (original positions)
+    this.edges = []; // Array of index pairs [u, v, type]
     this.vertexTolerance = vertexTolerance;
+    this.vertexOverrides = vertexOverrides;
+  }
+
+  /**
+   * Finds if there is an override for original coordinate pt.
+   * @param {Vector2D} pt 
+   * @returns {Vector2D|null}
+   */
+  getOverride(pt) {
+    for (const [keyStr, val] of this.vertexOverrides.entries()) {
+      const parts = keyStr.split(',');
+      const kx = parseFloat(parts[0]);
+      const ky = parseFloat(parts[1]);
+      const dist = Math.hypot(pt.x - kx, pt.y - ky);
+      if (dist < 0.1) { // 10cm matching tolerance
+        return val;
+      }
+    }
+    return null;
   }
 
   /**
@@ -19,12 +39,16 @@ export class PlanarGraph {
    * @returns {number} The index of the vertex
    */
   addVertex(pt) {
+    const overridePt = this.getOverride(pt);
+    const targetPt = overridePt || pt;
+
     for (let i = 0; i < this.vertices.length; i++) {
-      if (this.vertices[i].dist(pt) < this.vertexTolerance) {
+      if (this.vertices[i].dist(targetPt) < this.vertexTolerance) {
         return i;
       }
     }
-    this.vertices.push(new Vector2D(pt.x, pt.y));
+    this.vertices.push(new Vector2D(targetPt.x, targetPt.y));
+    this.originalVertices.push(new Vector2D(pt.x, pt.y));
     return this.vertices.length - 1;
   }
 

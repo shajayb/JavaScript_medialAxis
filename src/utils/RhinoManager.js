@@ -175,32 +175,46 @@ export class RhinoManager {
         // 2. Gather active medial axis curves
         const skeleton = [];
         if (this.appContext.state.showSkeleton && this.appContext.state.polygon.length >= 3) {
-            if (this.appContext.state.simplifySkeleton) {
-                // Simplified segments
-                const segmentsToExport = this.appContext.state.pruneBranches
-                    ? this.appContext.state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
-                    : this.appContext.state.skeletonData.simplifiedSegments;
-                    
-                segmentsToExport.forEach(seg => {
-                    skeleton.push([
-                        [seg.start.x, seg.start.y, 0.0],
-                        [seg.end.x, seg.end.y, 0.0]
-                    ]);
+            if (this.appContext.state.planarGraph) {
+                const graph = this.appContext.state.planarGraph;
+                graph.edges.forEach(edge => {
+                    if (edge[2] === 'skeleton') {
+                        const ptU = graph.vertices[edge[0]];
+                        const ptV = graph.vertices[edge[1]];
+                        skeleton.push([
+                            [ptU.x, ptU.y, 0.0],
+                            [ptV.x, ptV.y, 0.0]
+                        ]);
+                    }
                 });
             } else {
-                // Curved skeleton curves
-                const pts = this.appContext.state.skeletonData.regularPoints;
-                const samples = this.appContext.state.samplesPerEdge;
-                for (let i = 0; i < this.appContext.state.polygon.length; i++) {
-                    const branch = [];
-                    for (let j = 0; j < samples; j++) {
-                        const idx = i * samples + j;
-                        if (pts[idx]) {
-                            branch.push([pts[idx].x, pts[idx].y, 0.0]);
+                if (this.appContext.state.simplifySkeleton) {
+                    // Simplified segments
+                    const segmentsToExport = this.appContext.state.pruneBranches
+                        ? this.appContext.state.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint))
+                        : this.appContext.state.skeletonData.simplifiedSegments;
+                        
+                    segmentsToExport.forEach(seg => {
+                        skeleton.push([
+                            [seg.start.x, seg.start.y, 0.0],
+                            [seg.end.x, seg.end.y, 0.0]
+                        ]);
+                    });
+                } else {
+                    // Curved skeleton curves
+                    const pts = this.appContext.state.skeletonData.regularPoints;
+                    const samples = this.appContext.state.samplesPerEdge;
+                    for (let i = 0; i < this.appContext.state.polygon.length; i++) {
+                        const branch = [];
+                        for (let j = 0; j < samples; j++) {
+                            const idx = i * samples + j;
+                            if (pts[idx]) {
+                                branch.push([pts[idx].x, pts[idx].y, 0.0]);
+                            }
                         }
-                    }
-                    if (branch.length >= 2) {
-                        skeleton.push(branch);
+                        if (branch.length >= 2) {
+                            skeleton.push(branch);
+                        }
                     }
                 }
             }
@@ -208,13 +222,27 @@ export class RhinoManager {
         
         // 3. Gather structural ribs (if visible)
         const ribs = [];
-        if (this.appContext.state.showSkeleton && this.appContext.state.showRibs && this.appContext.acceptedRibsCache) {
-            this.appContext.acceptedRibsCache.forEach(rib => {
-                ribs.push({
-                    start: [rib.source.x, rib.source.y, 0.0],
-                    end: [rib.target.x, rib.target.y, 0.0]
+        if (this.appContext.state.showSkeleton && this.appContext.state.showRibs) {
+            if (this.appContext.state.planarGraph) {
+                const graph = this.appContext.state.planarGraph;
+                graph.edges.forEach(edge => {
+                    if (edge[2] && edge[2].startsWith('rib_')) {
+                        const ptU = graph.vertices[edge[0]];
+                        const ptV = graph.vertices[edge[1]];
+                        ribs.push({
+                            start: [ptU.x, ptU.y, 0.0],
+                            end: [ptV.x, ptV.y, 0.0]
+                        });
+                    }
                 });
-            });
+            } else if (this.appContext.acceptedRibsCache) {
+                this.appContext.acceptedRibsCache.forEach(rib => {
+                    ribs.push({
+                        start: [rib.source.x, rib.source.y, 0.0],
+                        end: [rib.target.x, rib.target.y, 0.0]
+                    });
+                });
+            }
         }
         
         // 4. Gather max inscribed circles
