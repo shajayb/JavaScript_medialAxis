@@ -1390,7 +1390,7 @@ function draw() {
         ];
         const geom = new THREE.BufferGeometry().setFromPoints(edgePts);
         const line = new THREE.Line(geom, edgeMat);
-        line.userData = { isGraphEdge: true, index: idx, u, v };
+        line.userData = { index: idx, u, v };
         meshesGroup.add(line);
       }
     });
@@ -1819,14 +1819,6 @@ function handleMouseDown(e) {
           document.getElementById('status-text').innerText = `Dragging graph vertex ${state.draggedGraphVertexIdx}...`;
           clickedGraphObject = true;
           break;
-        } else if (hit.object.userData && hit.object.userData.isGraphEdge) {
-          state.draggedGraphEdgeIdx = hit.object.userData.index;
-          state.dragStartMousePos = worldPos;
-          controls.enabled = false;
-          document.getElementById('status-dot').classList.add('loading');
-          document.getElementById('status-text').innerText = `Dragging graph edge ${state.draggedGraphEdgeIdx}...`;
-          clickedGraphObject = true;
-          break;
         }
       }
       
@@ -1907,24 +1899,6 @@ function handleMouseMove(e) {
     const origPt = state.planarGraph.originalVertices[state.draggedGraphVertexIdx];
     state.graphVertexOverrides.set(`${origPt.x.toFixed(4)},${origPt.y.toFixed(4)}`, worldPos);
     recomputeMAT();
-  } else if (state.draggedGraphEdgeIdx !== -1 && state.planarGraph && state.dragStartMousePos) {
-    const delta = worldPos.sub(state.dragStartMousePos);
-    const edge = state.planarGraph.edges[state.draggedGraphEdgeIdx];
-    
-    // Move endpoint u
-    const origPtU = state.planarGraph.originalVertices[edge[0]];
-    const currentPtU = state.planarGraph.vertices[edge[0]];
-    const newPtU = currentPtU.add(delta);
-    state.graphVertexOverrides.set(`${origPtU.x.toFixed(4)},${origPtU.y.toFixed(4)}`, newPtU);
-
-    // Move endpoint v
-    const origPtV = state.planarGraph.originalVertices[edge[1]];
-    const currentPtV = state.planarGraph.vertices[edge[1]];
-    const newPtV = currentPtV.add(delta);
-    state.graphVertexOverrides.set(`${origPtV.x.toFixed(4)},${origPtV.y.toFixed(4)}`, newPtV);
-
-    state.dragStartMousePos = worldPos;
-    recomputeMAT();
   } else if (state.draggedVertexIdx !== -1) {
     // Drag handle: Update vertex position in world coordinates
     state.polygon[state.draggedVertexIdx] = worldPos;
@@ -1971,12 +1945,6 @@ function handleMouseUp() {
     controls.enabled = true;
     document.getElementById('status-dot').classList.remove('loading');
     recomputeMAT();
-  } else if (state.draggedGraphEdgeIdx !== -1) {
-    state.draggedGraphEdgeIdx = -1;
-    state.dragStartMousePos = null;
-    controls.enabled = true;
-    document.getElementById('status-dot').classList.remove('loading');
-    recomputeMAT();
   } else if (state.draggedVertexIdx !== -1) {
     state.draggedVertexIdx = -1;
     controls.enabled = true; // Re-enable camera rotation
@@ -1990,13 +1958,6 @@ function handleMouseLeave() {
   state.hoveredMedialPoint = null;
   if (state.draggedGraphVertexIdx !== -1) {
     state.draggedGraphVertexIdx = -1;
-    controls.enabled = true;
-    document.getElementById('status-dot').classList.remove('loading');
-    recomputeMAT();
-  }
-  if (state.draggedGraphEdgeIdx !== -1) {
-    state.draggedGraphEdgeIdx = -1;
-    state.dragStartMousePos = null;
     controls.enabled = true;
     document.getElementById('status-dot').classList.remove('loading');
     recomputeMAT();
