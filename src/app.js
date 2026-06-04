@@ -499,6 +499,72 @@ export function applyBayEdits(rawBays, edits) {
   return activeBays;
 }
 
+function isEdgeInAnyActiveBay(ptU, ptV, activeBays, tolerance = 1e-3) {
+  for (const bay of activeBays) {
+    for (let i = 0; i < bay.length; i++) {
+      const p1 = bay[i];
+      const p2 = bay[(i + 1) % bay.length];
+      const matchNormal = (p1.dist(ptU) < tolerance && p2.dist(ptV) < tolerance);
+      const matchReverse = (p1.dist(ptV) < tolerance && p2.dist(ptU) < tolerance);
+      if (matchNormal || matchReverse) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function filterPlanarGraphByActiveBays(graph, activeBays) {
+  const filteredEdges = [];
+  for (const edge of graph.edges) {
+    const u = edge[0];
+    const v = edge[1];
+    const type = edge[2];
+    
+    // Outer boundary edges are always preserved
+    if (type === 'boundary') {
+      filteredEdges.push(edge);
+      continue;
+    }
+    
+    const ptU = graph.vertices[u];
+    const ptV = graph.vertices[v];
+    if (isEdgeInAnyActiveBay(ptU, ptV, activeBays, graph.vertexTolerance)) {
+      filteredEdges.push(edge);
+    }
+  }
+  
+  const usedVertexIndices = new Set();
+  for (const [u, v] of filteredEdges) {
+    usedVertexIndices.add(u);
+    usedVertexIndices.add(v);
+  }
+  
+  const newVertices = [];
+  const newOriginalVertices = [];
+  const indexMap = new Map();
+  
+  for (let i = 0; i < graph.vertices.length; i++) {
+    if (usedVertexIndices.has(i)) {
+      indexMap.set(i, newVertices.length);
+      newVertices.push(graph.vertices[i]);
+      newOriginalVertices.push(graph.originalVertices[i]);
+    }
+  }
+  
+  const mappedEdges = filteredEdges.map(edge => {
+    return [
+      indexMap.get(edge[0]),
+      indexMap.get(edge[1]),
+      edge[2]
+    ];
+  });
+  
+  graph.vertices = newVertices;
+  graph.originalVertices = newOriginalVertices;
+  graph.edges = mappedEdges;
+}
+
 // Compute the Medial Axis Transform using core library class
 function recomputeMAT() {
   if (state.polygon.length < 3) {
@@ -524,6 +590,29 @@ function recomputeMAT() {
     skeleton.junctionPoints, 
     state.mergeThreshold
   );
+  
+  // Store original coordinates and match with graph overrides
+  for (const node of nodes) {
+    node.origX = node.x;
+    node.origY = node.y;
+    
+    let foundOverride = null;
+    for (const [keyStr, val] of state.graphVertexOverrides.entries()) {
+      const parts = keyStr.split(',');
+      const kx = parseFloat(parts[0]);
+      const ky = parseFloat(parts[1]);
+      const dist = Math.hypot(node.origX - kx, node.origY - ky);
+      if (dist < 0.1) { // 10cm tolerance
+        foundOverride = val;
+        break;
+      }
+    }
+    if (foundOverride) {
+      node.x = foundOverride.x;
+      node.y = foundOverride.y;
+    }
+  }
+
   skeleton.simplifiedSegments = segments;
   skeleton.simplifiedNodes = nodes;
 
@@ -575,6 +664,10 @@ function recomputeMAT() {
     // D. Extract faces and apply edits
     const rawBays = graph.extractFaces();
     state.structuralBays = applyBayEdits(rawBays, state.bayEdits);
+    
+    // Synchronize graph: filter out edges not on active bay boundaries
+    filterPlanarGraphByActiveBays(graph, state.structuralBays);
+    
     console.log(`[PlanarGraph] Extracted raw ${rawBays.length} bays, applied edits to get ${state.structuralBays.length} bays.`);
   } else {
     state.structuralBays = [];
@@ -648,9 +741,17 @@ function computeAcceptedRibs() {
     const len = vec.length();
     const N = Math.max(1, Math.round(len / state.ribSpacing));
 
+    // Original points and vector
+    const startPtOrig = new Vector2D(startPt.origX, startPt.origY);
+    const endPtOrig = new Vector2D(endPt.origX, endPt.origY);
+    const vecOrig = endPtOrig.sub(startPtOrig);
+
     for (let k = 1; k < N; k++) {
       const t = k / N;
       const D_k = startPt.add(vec.scale(t));
+      const D_k_orig = startPtOrig.add(vecOrig.scale(t));
+      D_k.origX = D_k_orig.x;
+      D_k.origY = D_k_orig.y;
 
       const candidates = [];
       for (let i = 0; i < state.polygon.length; i++) {
@@ -658,8 +759,10 @@ function computeAcceptedRibs() {
         const v2 = state.polygon[(i + 1) % state.polygon.length];
         const cp = closestPointOnSegment(D_k, v1, v2);
         const dist = D_k.dist(cp);
+        const cpOrig = closestPointOnSegment(D_k_orig, v1, v2);
         candidates.push({
           point: cp,
+          pointOrig: cpOrig,
           dist: dist,
           vector: cp.sub(D_k).normalize()
         });
@@ -667,24 +770,32 @@ function computeAcceptedRibs() {
       candidates.sort((a, b) => a.dist - b.dist);
 
       const closest1 = candidates[0];
+      const target1 = new Vector2D(closest1.point.x, closest1.point.y);
+      target1.origX = closest1.pointOrig.x;
+      target1.origY = closest1.pointOrig.y;
+
       let closest2 = null;
+      let target2 = null;
       for (let i = 1; i < candidates.length; i++) {
         const cand = candidates[i];
         if (closest1.vector.dot(cand.vector) < 0.5) {
           closest2 = cand;
+          target2 = new Vector2D(closest2.point.x, closest2.point.y);
+          target2.origX = closest2.pointOrig.x;
+          target2.origY = closest2.pointOrig.y;
           break;
         }
       }
 
       candidateRibs.push({
         source: D_k,
-        target: closest1.point,
+        target: target1,
         priority: 1
       });
       if (closest2) {
         candidateRibs.push({
           source: D_k,
-          target: closest2.point,
+          target: target2,
           priority: 2
         });
       }
@@ -699,14 +810,17 @@ function computeAcceptedRibs() {
   }
 
   for (const node of activeInternalNodes) {
+    const nodeOrig = new Vector2D(node.origX, node.origY);
     const candidates = [];
     for (let i = 0; i < state.polygon.length; i++) {
       const v1 = state.polygon[i];
       const v2 = state.polygon[(i + 1) % state.polygon.length];
       const cp = closestPointOnSegment(node, v1, v2);
       const dist = node.dist(cp);
+      const cpOrig = closestPointOnSegment(nodeOrig, v1, v2);
       candidates.push({
         point: cp,
+        pointOrig: cpOrig,
         dist: dist,
         vector: cp.sub(node).normalize()
       });
@@ -714,13 +828,22 @@ function computeAcceptedRibs() {
     candidates.sort((a, b) => a.dist - b.dist);
 
     const closest1 = candidates[0];
+    const target1 = new Vector2D(closest1.point.x, closest1.point.y);
+    target1.origX = closest1.pointOrig.x;
+    target1.origY = closest1.pointOrig.y;
+
     let closest2 = null;
+    let target2 = null;
     let closest3 = null;
+    let target3 = null;
 
     for (let i = 1; i < candidates.length; i++) {
       const cand = candidates[i];
       if (closest1.vector.dot(cand.vector) < 0.5) {
         closest2 = cand;
+        target2 = new Vector2D(closest2.point.x, closest2.point.y);
+        target2.origX = closest2.pointOrig.x;
+        target2.origY = closest2.pointOrig.y;
         break;
       }
     }
@@ -731,6 +854,9 @@ function computeAcceptedRibs() {
         if (cand === closest2) continue;
         if (closest1.vector.dot(cand.vector) < 0.5 && closest2.vector.dot(cand.vector) < 0.5) {
           closest3 = cand;
+          target3 = new Vector2D(closest3.point.x, closest3.point.y);
+          target3.origX = closest3.pointOrig.x;
+          target3.origY = closest3.pointOrig.y;
           break;
         }
       }
@@ -738,20 +864,20 @@ function computeAcceptedRibs() {
 
     candidateRibs.push({
       source: node,
-      target: closest1.point,
+      target: target1,
       priority: 1
     });
     if (closest2) {
       candidateRibs.push({
         source: node,
-        target: closest2.point,
+        target: target2,
         priority: 2
       });
     }
     if (closest3) {
       candidateRibs.push({
         source: node,
-        target: closest3.point,
+        target: target3,
         priority: 3
       });
     }

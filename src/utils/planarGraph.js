@@ -39,7 +39,11 @@ export class PlanarGraph {
    * @returns {number} The index of the vertex
    */
   addVertex(pt) {
-    const overridePt = this.getOverride(pt);
+    const origPt = (pt.origX !== undefined && pt.origY !== undefined)
+      ? new Vector2D(pt.origX, pt.origY)
+      : pt;
+
+    const overridePt = this.getOverride(origPt);
     const targetPt = overridePt || pt;
 
     for (let i = 0; i < this.vertices.length; i++) {
@@ -48,7 +52,7 @@ export class PlanarGraph {
       }
     }
     this.vertices.push(new Vector2D(targetPt.x, targetPt.y));
-    this.originalVertices.push(new Vector2D(pt.x, pt.y));
+    this.originalVertices.push(new Vector2D(origPt.x, origPt.y));
     return this.vertices.length - 1;
   }
 
