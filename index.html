@@ -41,6 +41,8 @@
       </div>
     </div>
 
+
+
     <!-- HUD Control Sidebar -->
     <aside class="control-sidebar" id="control-sidebar">
       <div class="sidebar-header">
@@ -56,6 +58,8 @@
       <div class="sidebar-tabs">
         <button class="tab-btn active" id="btn-tab-workflow">Workflow</button>
         <button class="tab-btn" id="btn-tab-shading">SSAO & Shading</button>
+        <button class="tab-btn" id="btn-tab-ai-render">AI Render</button>
+        <button class="tab-btn" id="btn-tab-shape-grammar">Shape Grammar</button>
       </div>
 
       <div class="sidebar-scroll" id="tab-content-workflow">
@@ -158,6 +162,15 @@
             </div>
             <input type="range" id="slider-merge" min="0" max="10" step="0.1" value="2">
           </div>
+
+          <!-- Display Mode -->
+          <div style="margin-top: 10px;">
+            <label style="display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 6px;">Display Mode</label>
+            <select id="display-mode-select" style="width: 100%; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: #fff; font-size: 0.8rem; outline: none; box-sizing: border-box;">
+              <option value="STANDARD" selected>STANDARD</option>
+              <option value="DEPTH">DEPTH MAP</option>
+            </select>
+          </div>
         </section>
 
         <!-- Structural Workflow Section -->
@@ -175,14 +188,14 @@
                 <input type="checkbox" id="chk-show-ribs" checked>
                 <span class="slider-switch"></span>
               </label>
-              <button class="btn-collapse-arrow" id="btn-collapse-ribs-workflow" aria-label="Collapse workflow" style="background: none; border: none; padding: 4px; cursor: pointer; color: var(--text-muted); font-size: 0.85rem; display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease; outline: none; margin-left: 2px;">
+               <button class="btn-collapse-arrow collapsed" id="btn-collapse-ribs-workflow" aria-label="Collapse workflow" style="background: none; border: none; padding: 4px; cursor: pointer; color: var(--text-muted); font-size: 0.85rem; display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease; outline: none; margin-left: 2px;">
                 ▼
               </button>
             </div>
           </div>
 
           <!-- Nested dependents block -->
-          <div class="workflow-nested" id="ribs-workflow-dependents" style="margin-left: 15px; border-left: 2px solid var(--border-color); padding-left: 12px; margin-top: 10px; display: block;">
+          <div class="workflow-nested" id="ribs-workflow-dependents" style="margin-left: 15px; border-left: 2px solid var(--border-color); padding-left: 12px; margin-top: 10px; display: none;">
             
             <!-- Step 2: Prune Corner Branches -->
             <div class="toggle-container" id="toggle-prune-container" style="margin-bottom: 10px;">
@@ -312,6 +325,30 @@
               </label>
             </div>
 
+            <!-- Toggle: Show Roof Slab -->
+            <div class="toggle-container" style="margin-top: 10px;">
+              <div class="toggle-details">
+                <span class="toggle-label">Show Roof Slab</span>
+                <span class="toggle-sub">Composite concrete & timber roof sheets</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chk-3d-roof" checked>
+                <span class="slider-switch"></span>
+              </label>
+            </div>
+
+            <!-- Toggle: Show Hypar Ceilings -->
+            <div class="toggle-container" style="margin-top: 10px;">
+              <div class="toggle-details">
+                <span class="toggle-label">Show Hypar Ceilings</span>
+                <span class="toggle-sub">Timber hypar slatted ceilings over top-floor bays</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chk-3d-vaults" checked>
+                <span class="slider-switch"></span>
+              </label>
+            </div>
+
             <!-- Toggle: Show Balconies -->
             <div class="toggle-container" style="margin-top: 10px;">
               <div class="toggle-details">
@@ -336,17 +373,7 @@
               </label>
             </div>
 
-            <!-- Toggle: Show Vaulted Roofs -->
-            <div class="toggle-container" style="margin-top: 10px; margin-bottom: 10px;">
-              <div class="toggle-details">
-                <span class="toggle-label">Show Vaulted Roofs</span>
-                <span class="toggle-sub">Parametric vaulted shells over top-floor bays</span>
-              </div>
-              <label class="switch">
-                <input type="checkbox" id="chk-3d-vaults" checked>
-                <span class="slider-switch"></span>
-              </label>
-            </div>
+
 
             <!-- Toggle: Show Cell Volumes -->
             <div class="toggle-container" style="margin-top: 10px; margin-bottom: 10px;">
@@ -355,7 +382,7 @@
                 <span class="toggle-sub">Phenotypic 3D cells colored by classification</span>
               </div>
               <label class="switch">
-                <input type="checkbox" id="chk-3d-cells" checked>
+                <input type="checkbox" id="chk-3d-cells">
                 <span class="slider-switch"></span>
               </label>
             </div>
@@ -571,6 +598,80 @@
           </div>
         </section>
       </div>
+
+      <!-- AI Render Tab Content -->
+      <div class="sidebar-scroll" id="tab-content-ai-render" style="display: none;">
+        <div class="properties imagen-controls" style="border: none; padding: 0;">
+          <label style="display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 6px;">Render Resolution</label>
+          <select id="imagen-resolution" style="width: 100%; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: #fff; font-size: 0.8rem; margin-bottom: 12px; outline: none; box-sizing: border-box;">
+            <option value="4k" selected>4K (3840x2160)</option>
+            <option value="2k">2K (2560x1440)</option>
+            <option value="1k">1K (1920x1080)</option>
+          </select>
+          
+          <label style="display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 6px;">Prompt Constraints</label>
+          <textarea id="imagen-prompt" rows="4" placeholder="e.g. Cinematic render of a modern concrete building, evening light..." style="width: 100%; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: #fff; font-size: 0.8rem; margin-bottom: 12px; resize: vertical; outline: none; box-sizing: border-box;"></textarea>
+          
+          <button class="btn btn-primary" id="btn-generate-imagen" style="width: 100%; justify-content: center; font-weight: 700; margin-bottom: 8px;">GENERATE RENDER</button>
+          <button class="btn" id="btn-show-imagen" style="width: 100%; justify-content: center; font-weight: 700; display: none; margin-bottom: 8px;">SHOW LAST RENDER</button>
+          <div id="imagen-status" style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; margin-top: 5px; text-align: center;"></div>
+          
+          <label style="display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 6px;">API Payload Log</label>
+          <textarea id="imagen-payload-display" rows="6" readonly style="width: 100%; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: rgba(0,0,0,0.02); font-family: monospace; font-size: 10px; outline: none; resize: none; box-sizing: border-box;"></textarea>
+        </div>
+      </div>
+
+      <!-- Shape Grammar Tab Content -->
+      <div class="sidebar-scroll" id="tab-content-shape-grammar" style="display: none;">
+        <section class="control-group">
+          <h3>Shape Grammar Parameters</h3>
+          
+          <!-- Roof Cantilever Scale Slider -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Roof Cantilever Scale</span>
+              <span class="slider-value" id="val-cantilever-scale">1.0</span>
+            </div>
+            <input type="range" id="slider-cantilever-scale" min="0.1" max="3.0" step="0.1" value="1.0">
+          </div>
+
+          <!-- Roof Hypar H Slider -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Roof Hypar H</span>
+              <span class="slider-value" id="val-roof-hypar-h">2.0m</span>
+            </div>
+            <input type="range" id="slider-roof-hypar-h" min="0.0" max="4.0" step="0.1" value="2.0">
+          </div>
+
+          <!-- Inverted Roof Pitch RH Slider -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Inverted Roof Pitch RH</span>
+              <span class="slider-value" id="val-roof-pitch-rh">1.0m</span>
+            </div>
+            <input type="range" id="slider-roof-pitch-rh" min="0.0" max="3.0" step="0.1" value="1.0">
+          </div>
+
+          <!-- Roof Hypar Slat Spacing Slider -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Roof Hypar Slat Spacing</span>
+              <span class="slider-value" id="val-roof-hypar-spacing">2.0m</span>
+            </div>
+            <input type="range" id="slider-roof-hypar-spacing" min="0.2" max="5.0" step="0.1" value="2.0">
+          </div>
+
+          <!-- Brise Soleil Fin Scale Slider -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Brise Soleil Fin Scale</span>
+              <span class="slider-value" id="val-brise-fin-scale">1.5</span>
+            </div>
+            <input type="range" id="slider-brise-fin-scale" min="0.5" max="3.0" step="0.1" value="1.5">
+          </div>
+        </section>
+      </div>
     </aside>
   </div>
 
@@ -582,6 +683,25 @@
     </div>
     <div id="stats-render-time">Computation: --ms</div>
   </footer>
+
+  <!-- IMAGEN Result Modal -->
+  <div id="imagen-modal" style="display: none; position: absolute; top:0; left:0; width:100%; height:100%; background: rgba(30,30,30,0.95); z-index: 9999; flex-direction: column; justify-content: center; align-items: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+      <!-- Container conforming exactly to 1365 x 768 pixels -->
+      <div id="imagen-modal-content" style="position: relative; width: 1365px; height: 768px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); background: #000;">
+          <!-- Header Overlay pinned to the inner wrapper -->
+          <div style="position: absolute; top: 15px; left: 15px; right: 15px; display: flex; justify-content: space-between; align-items: center; z-index: 10; pointer-events: none;">
+            <h3 id="imagen-modal-title" style="color: #fff; margin: 0; font-size: 13px; font-weight: 600; font-family: inherit; text-transform: uppercase; pointer-events: auto;">AI Render Result</h3>
+            <div style="display: flex; align-items: center; pointer-events: auto;">
+              <button id="btn-save-imagen">Download</button>
+              <button id="btn-close-imagen" style="background: none; border: none; outline: none; color: #fff; font-size: 28px; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
+            </div>
+          </div>
+          
+          <button id="btn-prev-imagen" style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); z-index: 10; color: #fff;">&lsaquo;</button>
+          <img id="imagen-result-img" style="width: 100%; height: 100%; display: block; image-rendering: high-quality; transform: translateZ(0); object-fit: contain;" />
+          <button id="btn-next-imagen" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); z-index: 10; color: #fff;">&rsaquo;</button>
+      </div>
+  </div>
 
   <script type="module" src="./src/app.js"></script>
 </body>

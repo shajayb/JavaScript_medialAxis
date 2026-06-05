@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/medialAxis.js",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 3000",
+    "dev": "vite --host 0.0.0.0 --port 3002",
     "build": "vite build",
     "preview": "vite preview",
     "test": "node scratch/test-mat.js",

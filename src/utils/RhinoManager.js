@@ -274,6 +274,27 @@ export class RhinoManager {
                 });
             }
 
+            const unprunedBays = [];
+            if (item.unprunedStructuralBays) {
+                item.unprunedStructuralBays.forEach(cell => {
+                    unprunedBays.push(cell.map(v => [v.x, v.y, 0.0]));
+                });
+            }
+
+            const prunedSkeletonVertices = [];
+            if (item.polygon.length >= 3 && item.skeletonData && item.skeletonData.simplifiedSegments) {
+                const prunedSegments = item.skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint));
+                prunedSegments.forEach(seg => {
+                    prunedSkeletonVertices.push([seg.start.x, seg.start.y]);
+                    prunedSkeletonVertices.push([seg.end.x, seg.end.y]);
+                    if (seg.divisionPoints) {
+                        seg.divisionPoints.forEach(dp => {
+                            prunedSkeletonVertices.push([dp.x, dp.y]);
+                        });
+                    }
+                });
+            }
+
             // Compute boundary segment classifications
             let isCCW = true;
             let area = 0;
@@ -326,6 +347,8 @@ export class RhinoManager {
                 ribs,
                 circles,
                 bays,
+                unprunedBays,
+                prunedSkeletonVertices,
                 planarGraphVertices: item.planarGraph ? item.planarGraph.vertices.map(v => [v.x, v.y, 0.0]) : null,
                 planarGraphEdges: item.planarGraph ? item.planarGraph.edges.map(e => [e[0], e[1]]) : null,
                 segmentContexts,
@@ -375,9 +398,9 @@ export class RhinoManager {
                 show3DColumns: this.appContext.state.show3DColumns,
                 show3DBeams: this.appContext.state.show3DBeams,
                 showFloorSlabs: this.appContext.state.showFloorSlabs,
+                showRoofSlab: this.appContext.state.showRoofSlab,
                 showBalconies: this.appContext.state.showBalconies,
                 showBriseSoleil: this.appContext.state.showBriseSoleil,
-                showVaultedRoofs: this.appContext.state.showVaultedRoofs,
                 show3DCells: this.appContext.state.show3DCells,
                 columnRadius: this.appContext.state.columnRadius,
                 beamWidth: this.appContext.state.beamWidth,
@@ -388,7 +411,13 @@ export class RhinoManager {
                 louverWidth: this.appContext.state.louverWidth,
                 louverDepth: this.appContext.state.louverDepth,
                 louverSpacing: this.appContext.state.louverSpacing,
-                vaultHeight: this.appContext.state.vaultHeight
+                vaultHeight: this.appContext.state.vaultHeight,
+                showVaultedRoofs: this.appContext.state.showVaultedRoofs,
+                cantileverScale: this.appContext.state.cantileverScale,
+                briseFinScale: this.appContext.state.briseFinScale,
+                roofHyparH: this.appContext.state.roofHyparH,
+                roofHyparSlatSpacing: this.appContext.state.roofHyparSlatSpacing,
+                roofPitchRH: this.appContext.state.roofPitchRH
             });
         });
     }

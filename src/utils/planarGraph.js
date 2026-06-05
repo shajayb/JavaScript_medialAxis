@@ -245,7 +245,7 @@ export class PlanarGraph {
               }
             }
             
-            if (boundaryCount > 0 && uniqueRibIds.size >= 2) {
+            if (boundaryCount > 0) {
               faces.push(points);
             }
           }

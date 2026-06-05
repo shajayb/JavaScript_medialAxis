@@ -6,6 +6,7 @@ import { Vector2D } from './utils/vector2d.js';
 import { distanceToPolygon, closestPointOnSegment, pointInPolygon, mergePolygonCells, intersectRaySegment } from './utils/geometry.js';
 import { RhinoManager } from './utils/RhinoManager.js';
 import { PlanarGraph } from './utils/planarGraph.js';
+import { ImagenAPI } from './ImagenAPI.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
@@ -49,10 +50,11 @@ const state = {
   show3DColumns: true,
   show3DBeams: true,
   showFloorSlabs: true,
+  showRoofSlab: true,
+  showVaultedRoofs: true,
   showBalconies: true,
   showBriseSoleil: true,
-  showVaultedRoofs: true,
-  show3DCells: true,
+  show3DCells: false,
   columnRadius: 0.25,
   beamWidth: 0.3,
   beamDepth: 0.5,
@@ -73,6 +75,11 @@ const state = {
   dirLight1Intensity: 0.4,
   dirLight2Intensity: 0.2,
   showGroundPlane: true,
+  cantileverScale: 1.0,
+  briseFinScale: 1.5,
+  roofHyparH: 2.0,
+  roofHyparSlatSpacing: 2.0,
+  roofPitchRH: 1.0,
   showGridHelper: true,
 };
 
@@ -92,6 +99,7 @@ Object.defineProperty(state, 'polygon', {
         hasScaffold: true,
         planarGraph: null,
         structuralBays: [],
+        unprunedStructuralBays: [],
         selectedBayIndices: [],
         bayEdits: [],
         graphVertexOverrides: new Map(),
@@ -121,6 +129,17 @@ Object.defineProperty(state, 'structuralBays', {
   set(val) {
     const active = state.importedPolygons.find(p => p.id === state.activePolygonId);
     if (active) active.structuralBays = val;
+  }
+});
+
+Object.defineProperty(state, 'unprunedStructuralBays', {
+  get() {
+    const active = state.importedPolygons.find(p => p.id === state.activePolygonId);
+    return active ? (active.unprunedStructuralBays || []) : [];
+  },
+  set(val) {
+    const active = state.importedPolygons.find(p => p.id === state.activePolygonId);
+    if (active) active.unprunedStructuralBays = val;
   }
 });
 
@@ -196,6 +215,7 @@ const appContext = {
         hasScaffold: false, // Default is unticked/inactive as requested!
         planarGraph: null,
         structuralBays: [],
+        unprunedStructuralBays: [],
         selectedBayIndices: [],
         bayEdits: [],
         graphVertexOverrides: new Map(),
@@ -715,40 +735,113 @@ export function findMatchingBayIndex(bays, pt) {
 }
 
 // Applies edits history to newly extracted raw bays
-export function applyBayEdits(rawBays, edits) {
+export function applyBayEdits(rawBays, edits, rawPrunedBays = null) {
   let activeBays = rawBays.map(cell => cell.map(pt => new Vector2D(pt.x, pt.y)));
   
+  let prunedActiveBays = rawPrunedBays 
+    ? rawPrunedBays.map(cell => cell.map(pt => new Vector2D(pt.x, pt.y)))
+    : null;
+    
   for (const edit of edits) {
     if (edit.type === 'delete') {
-      const idx = findMatchingBayIndex(activeBays, edit.point);
-      if (idx !== -1) {
-        activeBays.splice(idx, 1);
-      }
-    } else if (edit.type === 'merge') {
-      const matchIndices = [];
-      for (const pt of edit.points) {
-        const idx = findMatchingBayIndex(activeBays, pt);
-        if (idx !== -1 && !matchIndices.includes(idx)) {
-          matchIndices.push(idx);
+      if (prunedActiveBays) {
+        // Parallel matching: find matching cell in the pruned active bays first
+        const prunedIdx = findMatchingBayIndex(prunedActiveBays, edit.point);
+        if (prunedIdx !== -1) {
+          const prunedCell = prunedActiveBays[prunedIdx];
+          prunedActiveBays.splice(prunedIdx, 1);
+          
+          // Delete all unpruned cells whose centroid falls inside the pruned cell
+          for (let i = activeBays.length - 1; i >= 0; i--) {
+            const uCentroid = getCentroid(activeBays[i]);
+            if (pointInPolygon(uCentroid, prunedCell)) {
+              activeBays.splice(i, 1);
+            }
+          }
         }
-      }
-      
-      if (matchIndices.length >= 2) {
-        // Sort descending to splice safely
-        matchIndices.sort((a, b) => b - a);
-        const cellsToMerge = [];
-        for (const idx of matchIndices) {
-          cellsToMerge.push(activeBays[idx]);
+      } else {
+        const idx = findMatchingBayIndex(activeBays, edit.point);
+        if (idx !== -1) {
           activeBays.splice(idx, 1);
         }
+      }
+    } else if (edit.type === 'merge') {
+      if (prunedActiveBays) {
+        const prunedMatchIndices = [];
+        for (const pt of edit.points) {
+          const idx = findMatchingBayIndex(prunedActiveBays, pt);
+          if (idx !== -1 && !prunedMatchIndices.includes(idx)) {
+            prunedMatchIndices.push(idx);
+          }
+        }
         
-        const mergedCell = mergePolygonCells(cellsToMerge);
-        if (mergedCell) {
-          activeBays.push(mergedCell);
-        } else {
-          // If merge failed, put them back
-          for (const cell of cellsToMerge) {
-            activeBays.push(cell);
+        if (prunedMatchIndices.length >= 2) {
+          prunedMatchIndices.sort((a, b) => b - a);
+          const prunedCellsToMerge = [];
+          for (const idx of prunedMatchIndices) {
+            prunedCellsToMerge.push(prunedActiveBays[idx]);
+            prunedActiveBays.splice(idx, 1);
+          }
+          const mergedPrunedCell = mergePolygonCells(prunedCellsToMerge);
+          if (mergedPrunedCell) {
+            prunedActiveBays.push(mergedPrunedCell);
+          } else {
+            for (const cell of prunedCellsToMerge) {
+              prunedActiveBays.push(cell);
+            }
+          }
+          
+          // Find all unpruned cells belonging to any of the deleted pruned cells
+          const unprunedMatchIndices = [];
+          for (let i = 0; i < activeBays.length; i++) {
+            const uCentroid = getCentroid(activeBays[i]);
+            const isInsideAny = prunedCellsToMerge.some(pCell => pointInPolygon(uCentroid, pCell));
+            if (isInsideAny) {
+              unprunedMatchIndices.push(i);
+            }
+          }
+          
+          if (unprunedMatchIndices.length >= 2) {
+            unprunedMatchIndices.sort((a, b) => b - a);
+            const unprunedCellsToMerge = [];
+            for (const idx of unprunedMatchIndices) {
+              unprunedCellsToMerge.push(activeBays[idx]);
+              activeBays.splice(idx, 1);
+            }
+            const mergedUnprunedCell = mergePolygonCells(unprunedCellsToMerge);
+            if (mergedUnprunedCell) {
+              activeBays.push(mergedUnprunedCell);
+            } else {
+              for (const cell of unprunedCellsToMerge) {
+                activeBays.push(cell);
+              }
+            }
+          }
+        }
+      } else {
+        const matchIndices = [];
+        for (const pt of edit.points) {
+          const idx = findMatchingBayIndex(activeBays, pt);
+          if (idx !== -1 && !matchIndices.includes(idx)) {
+            matchIndices.push(idx);
+          }
+        }
+        
+        if (matchIndices.length >= 2) {
+          matchIndices.sort((a, b) => b - a);
+          const cellsToMerge = [];
+          for (const idx of matchIndices) {
+            cellsToMerge.push(activeBays[idx]);
+            activeBays.splice(idx, 1);
+          }
+          
+          const mergedCell = mergePolygonCells(cellsToMerge);
+          if (mergedCell) {
+            activeBays.push(mergedCell);
+          } else {
+            for (const cell of cellsToMerge) {
+              activeBays.push(cell);
+            }
           }
         }
       }
@@ -1089,11 +1182,46 @@ function computeSingleScaffold() {
     // D. Extract faces and apply edits
     const rawBays = graph.extractFaces();
     state.structuralBays = applyBayEdits(rawBays, state.bayEdits);
-    
+
+    // Build separate graph for the unpruned skeleton roof faces
+    const unprunedGraph = new PlanarGraph(1e-3, state.graphVertexOverrides);
+    for (let i = 0; i < subdividedPolygon.length; i++) {
+      unprunedGraph.addEdge(subdividedPolygon[i], subdividedPolygon[(i + 1) % subdividedPolygon.length], 'boundary');
+    }
+    if (state.showSkeleton) {
+      if (state.simplifySkeleton) {
+        for (const seg of skeleton.simplifiedSegments) {
+          const pts = [seg.start, ...(seg.divisionPoints || []), seg.end];
+          for (let i = 0; i < pts.length - 1; i++) {
+            unprunedGraph.addEdge(pts[i], pts[i + 1], 'skeleton');
+          }
+        }
+      } else {
+        const samples = state.samplesPerEdge;
+        const pts = skeleton.regularPoints;
+        for (let i = 0; i < state.polygon.length; i++) {
+          for (let j = 0; j < samples - 1; j++) {
+            const idx1 = i * samples + j;
+            const idx2 = i * samples + (j + 1);
+            if (pts[idx1] && pts[idx2]) {
+              unprunedGraph.addEdge(pts[idx1], pts[idx2], 'skeleton');
+            }
+          }
+        }
+      }
+    }
+    for (let idx = 0; idx < acceptedRibs.length; idx++) {
+      const rib = acceptedRibs[idx];
+      unprunedGraph.addEdge(rib.source, rib.target, `rib_${idx}`);
+    }
+    const rawUnprunedBays = unprunedGraph.extractFaces();
+    state.unprunedStructuralBays = applyBayEdits(rawUnprunedBays, state.bayEdits, rawBays);
+
     // Synchronize graph: filter out edges not on active bay boundaries
     filterPlanarGraphByActiveBays(graph, state.structuralBays);
   } else {
     state.structuralBays = [];
+    state.unprunedStructuralBays = [];
   }
 }
 
@@ -1975,6 +2103,458 @@ function getCantileverDistance(normal) {
   }
 }
 
+function getMiterOffset(n1, n2, d1, d2) {
+  const D = n1.x * n2.y - n1.y * n2.x;
+  if (Math.abs(D) < 1e-4) {
+    return { x: n1.x * d1, y: n1.y * d1 };
+  }
+  let dx = (d1 * n2.y - d2 * n1.y) / D;
+  let dy = (d2 * n1.x - d1 * n2.x) / D;
+  const len = Math.hypot(dx, dy);
+  const maxLen = 4 * Math.max(d1, d2);
+  if (len > maxLen) {
+    dx = (dx / len) * maxLen;
+    dy = (dy / len) * maxLen;
+  }
+  return { x: dx, y: dy };
+}
+
+function computeBipartiteVertexHeights(bays) {
+  const getX = pt => pt.x !== undefined ? pt.x : pt[0];
+  const getY = pt => pt.y !== undefined ? pt.y : pt[1];
+  
+  const uniqueVerts = [];
+  const getUniqueIdx = (pt) => {
+    const px = getX(pt);
+    const py = getY(pt);
+    for (let i = 0; i < uniqueVerts.length; i++) {
+      const ux = getX(uniqueVerts[i]);
+      const uy = getY(uniqueVerts[i]);
+      if (Math.hypot(px - ux, py - uy) < 0.05) {
+        return i;
+      }
+    }
+    uniqueVerts.push(pt);
+    return uniqueVerts.length - 1;
+  };
+
+  const cellVertIndices = bays.map(cell => cell.map(pt => getUniqueIdx(pt)));
+
+  const adj = Array.from({ length: uniqueVerts.length }, () => []);
+  cellVertIndices.forEach(cellIndices => {
+    const m = cellIndices.length;
+    for (let i = 0; i < m; i++) {
+      const u = cellIndices[i];
+      const v = cellIndices[(i + 1) % m];
+      if (!adj[u].includes(v)) adj[u].push(v);
+    }
+  });
+
+  for (let u = 0; u < uniqueVerts.length; u++) {
+    adj[u].forEach(v => {
+      if (!adj[v].includes(u)) adj[v].push(u);
+    });
+  }
+
+  const indicesSorted = Array.from({ length: uniqueVerts.length }, (_, i) => i);
+  indicesSorted.sort((i1, i2) => {
+    const x1 = getX(uniqueVerts[i1]);
+    const y1 = getY(uniqueVerts[i1]);
+    const x2 = getX(uniqueVerts[i2]);
+    const y2 = getY(uniqueVerts[i2]);
+    if (Math.abs(x1 - x2) > 1e-4) return x1 - x2;
+    return y1 - y2;
+  });
+
+  adj.forEach(neighbors => {
+    neighbors.sort((n1, n2) => {
+      const x1 = getX(uniqueVerts[n1]);
+      const y1 = getY(uniqueVerts[n1]);
+      const x2 = getX(uniqueVerts[n2]);
+      const y2 = getY(uniqueVerts[n2]);
+      if (Math.abs(x1 - x2) > 1e-4) return x1 - x2;
+      return y1 - y2;
+    });
+  });
+
+  const colors = new Array(uniqueVerts.length).fill(-1);
+  for (const startIdx of indicesSorted) {
+    if (colors[startIdx] === -1) {
+      colors[startIdx] = 0;
+      const queue = [startIdx];
+      while (queue.length > 0) {
+        const u = queue.shift();
+        const curColor = colors[u];
+        const nextColor = 1 - curColor;
+        adj[u].forEach(v => {
+          if (colors[v] === -1) {
+            colors[v] = nextColor;
+            queue.push(v);
+          }
+        });
+      }
+    }
+  }
+
+  return { uniqueVerts, colors, getX, getY };
+}
+
+function getVertexColor(pt, bipartiteData) {
+  if (!bipartiteData) return 0;
+  const { uniqueVerts, colors, getX, getY } = bipartiteData;
+  const px = getX(pt);
+  const py = getY(pt);
+  for (let i = 0; i < uniqueVerts.length; i++) {
+    const ux = getX(uniqueVerts[i]);
+    const uy = getY(uniqueVerts[i]);
+    if (Math.hypot(px - ux, py - uy) < 0.05) {
+      return colors[i];
+    }
+  }
+  return 0;
+}
+
+function isInteriorSkeletonPoint(pt, polygon) {
+  const { distance } = distanceToPolygon(pt, polygon);
+  return distance > 0.05;
+}
+
+function createRoofSheetGeometry(structuralBays, cantileverCells, zTop, RH, isConcrete) {
+  const geom = new THREE.BufferGeometry();
+  const positions = [];
+  const indices = [];
+  let vOffset = 0;
+
+  const addTriangle = (p0, p1, p2, i0, i1, i2) => {
+    const area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
+    if (area < 0) {
+      indices.push(i0, i2, i1);
+    } else {
+      indices.push(i0, i1, i2);
+    }
+  };
+
+  const getVertexHeight = (v) => {
+    const isInterior = isInteriorSkeletonPoint(v, state.polygon);
+    if (isInterior) {
+      return isConcrete ? zTop : (zTop - RH);
+    } else {
+      return isConcrete ? (zTop + RH) : zTop;
+    }
+  };
+
+  // 1. Add structural bays (never cantilevered)
+  structuralBays.forEach(cell => {
+    const n = cell.length;
+    if (n < 3) return;
+    
+    // Calculate centroid
+    let sumX = 0, sumY = 0;
+    cell.forEach(v => {
+      sumX += v.x;
+      sumY += v.y;
+    });
+    const cx = sumX / n;
+    const cy = sumY / n;
+    
+    // Heights for each vertex
+    const cellHeights = [];
+    cell.forEach(v => {
+      const zVal = getVertexHeight(v);
+      cellHeights.push(zVal);
+      positions.push(v.x, v.y, zVal);
+    });
+    
+    // Centroid height is average of vertex heights
+    const czVal = cellHeights.reduce((sum, h) => sum + h, 0) / n;
+    positions.push(cx, cy, czVal); // Centroid at index vOffset + n
+    
+    // Add faces (CCW)
+    const cPt = { x: cx, y: cy };
+    for (let i = 0; i < n; i++) {
+      const next = (i + 1) % n;
+      addTriangle(cell[i], cell[next], cPt, vOffset + i, vOffset + next, vOffset + n);
+    }
+    
+    vOffset += n + 1;
+  });
+
+  // 2. Add cantilever cells
+  cantileverCells.forEach(cell => {
+    const n = cell.length; // Always 4
+    if (n < 3) return;
+    
+    // Calculate centroid
+    let sumX = 0, sumY = 0;
+    cell.forEach(v => {
+      sumX += v.x;
+      sumY += v.y;
+    });
+    const cx = sumX / n;
+    const cy = sumY / n;
+    
+    // Heights for each vertex
+    const cellHeights = [];
+    cell.forEach((v, idx) => {
+      // Indices 2 and 3 are the cantilevered outer roof points
+      const isCantPoint = (idx === 2 || idx === 3);
+      const zVal = isConcrete ? (zTop + RH) : (isCantPoint ? (zTop + RH) : zTop);
+      cellHeights.push(zVal);
+      positions.push(v.x, v.y, zVal);
+    });
+    
+    // Centroid height is average of vertex heights
+    const cz = cellHeights.reduce((sum, h) => sum + h, 0) / n;
+    positions.push(cx, cy, cz); // Centroid at index vOffset + n
+    
+    // Add faces (CCW)
+    const cPt = { x: cx, y: cy };
+    for (let i = 0; i < n; i++) {
+      const next = (i + 1) % n;
+      addTriangle(cell[i], cell[next], cPt, vOffset + i, vOffset + next, vOffset + n);
+    }
+    
+    vOffset += n + 1;
+  });
+
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+function createHyparCellGeometry(vertices2D, zTop, zBottomBase, H, spacing, bipartiteData, originalCell) {
+  const geom = new THREE.BufferGeometry();
+  const n = vertices2D.length;
+  if (n < 3) return geom;
+
+  const positions = [];
+  const indices = [];
+
+  const zHigh = zTop - 0.05; // 5 cm shadow gap below the concrete roof slab
+
+  if (n === 4) {
+    const M = 8;
+    const v0 = vertices2D[0];
+    const v1 = vertices2D[1];
+    const v2 = vertices2D[2];
+    const v3 = vertices2D[3];
+
+    // Get colors of original vertices
+    const c0 = getVertexColor(originalCell && originalCell[0] ? originalCell[0] : v0, bipartiteData);
+    const c1 = getVertexColor(originalCell && originalCell[1] ? originalCell[1] : v1, bipartiteData);
+    const c2 = getVertexColor(originalCell && originalCell[2] ? originalCell[2] : v2, bipartiteData);
+    const c3 = getVertexColor(originalCell && originalCell[3] ? originalCell[3] : v3, bipartiteData);
+
+    const h0 = c0 === 0 ? zBottomBase : zHigh;
+    const h1 = c1 === 0 ? zBottomBase : zHigh;
+    const h2 = c2 === 0 ? zBottomBase : zHigh;
+    const h3 = c3 === 0 ? zBottomBase : zHigh;
+
+    const lenU = (Math.hypot(v0.x - v1.x, v0.y - v1.y) + Math.hypot(v3.x - v2.x, v3.y - v2.y)) / 2;
+    const N_slats = Math.max(2, Math.round(lenU / spacing) + 1);
+    const slatWidth = 0.05; // 5 cm wide
+    const slatDepth = 0.1; // 10 cm deep
+    
+    for (let k = 0; k < N_slats; k++) {
+      const u = k / (N_slats - 1 || 1);
+      
+      // Calculate A (at v = 0) and B (at v = 1) on the hypar underside using colors
+      const Ax = (1 - u) * v0.x + u * v1.x;
+      const Ay = (1 - u) * v0.y + u * v1.y;
+      const Az = (1 - u) * h0 + u * h1;
+
+      const Bx = u * v2.x + (1 - u) * v3.x;
+      const By = u * v2.y + (1 - u) * v3.y;
+      const Bz = (1 - u) * h3 + u * h2;
+
+      const dx = Bx - Ax;
+      const dy = By - Ay;
+      const dz = Bz - Az;
+      const len = Math.hypot(dx, dy, dz);
+      if (len < 1e-4) continue;
+
+      const nx = dx / len;
+      const ny = dy / len;
+      const nz = dz / len;
+
+      // Perpendicular vector U
+      let ux, uy, uz;
+      if (Math.abs(nx) < 0.9 && Math.abs(ny) < 0.9) {
+        ux = -ny;
+        uy = nx;
+        uz = 0;
+      } else {
+        ux = nz;
+        uy = 0;
+        uz = -nx;
+      }
+      const uLen = Math.hypot(ux, uy, uz);
+      const uNx = ux / uLen;
+      const uNy = uy / uLen;
+      const uNz = uz / uLen;
+
+      // V = N x U
+      const vNx = dirY => ny * uNz - nz * uNy; // wait, let's write it direct:
+      const vNxVal = ny * uNz - nz * uNy;
+      const vNyVal = nz * uNx - nx * uNz;
+      const vNzVal = nx * uNy - ny * uNx;
+
+      const w = slatWidth / 2;
+      const d = slatDepth / 2;
+
+      const vIdxStart = positions.length / 3;
+
+      // Add 8 vertices
+      positions.push(Ax - uNx * w - vNxVal * d, Ay - uNy * w - vNyVal * d, Az - uNz * w - vNzVal * d);
+      positions.push(Ax + uNx * w - vNxVal * d, Ay + uNy * w - vNyVal * d, Az + uNz * w + vNzVal * d);
+      positions.push(Ax + uNx * w + vNxVal * d, Ay + uNy * w + vNyVal * d, Az + uNz * w + vNzVal * d);
+      positions.push(Ax - uNx * w + vNxVal * d, Ay - uNy * w - vNyVal * d, Az - uNz * w - vNzVal * d);
+
+      positions.push(Bx - uNx * w - vNxVal * d, By - uNy * w - vNyVal * d, Bz - uNz * w - vNzVal * d);
+      positions.push(Bx + uNx * w - vNxVal * d, By - uNy * w - vNyVal * d, Bz + uNz * w + vNzVal * d);
+      positions.push(Bx + uNx * w + vNxVal * d, By + uNy * w + vNyVal * d, Bz + uNz * w + vNzVal * d);
+      positions.push(Bx - uNx * w + vNxVal * d, By - uNy * w - vNyVal * d, Bz - uNz * w - vNzVal * d);
+
+      // Add faces for this box (CCW):
+      indices.push(vIdxStart + 0, vIdxStart + 2, vIdxStart + 1);
+      indices.push(vIdxStart + 0, vIdxStart + 3, vIdxStart + 2);
+
+      indices.push(vIdxStart + 4, vIdxStart + 5, vIdxStart + 6);
+      indices.push(vIdxStart + 4, vIdxStart + 6, vIdxStart + 7);
+
+      indices.push(vIdxStart + 0, vIdxStart + 1, vIdxStart + 5);
+      indices.push(vIdxStart + 0, vIdxStart + 5, vIdxStart + 4);
+
+      indices.push(vIdxStart + 1, vIdxStart + 2, vIdxStart + 6);
+      indices.push(vIdxStart + 1, vIdxStart + 6, vIdxStart + 5);
+
+      indices.push(vIdxStart + 2, vIdxStart + 3, vIdxStart + 7);
+      indices.push(vIdxStart + 2, vIdxStart + 7, vIdxStart + 6);
+
+      indices.push(vIdxStart + 3, vIdxStart + 0, vIdxStart + 4);
+      indices.push(vIdxStart + 3, vIdxStart + 4, vIdxStart + 7);
+    }
+  } else {
+    // Fallback: simple triangulation with bipartite Z heights
+    vertices2D.forEach((v, idx) => {
+      const origV = (originalCell && originalCell[idx]) ? originalCell[idx] : v;
+      const col = getVertexColor(origV, bipartiteData);
+      const z = col === 0 ? zBottomBase : zHigh;
+      positions.push(v.x, v.y, z);
+    });
+    vertices2D.forEach(v => {
+      positions.push(v.x, v.y, zHigh);
+    });
+
+    const pts = vertices2D.map(v => new THREE.Vector2(v.x, v.y));
+    const triangles = THREE.ShapeUtils.triangulateShape(pts, []);
+
+    triangles.forEach(tri => {
+      indices.push(tri[2], tri[1], tri[0]);
+      indices.push(tri[0] + n, tri[1] + n, tri[2] + n);
+    });
+
+    for (let j = 0; j < n; j++) {
+      const jNext = (j + 1) % n;
+      const iBot = j;
+      const iBotNext = jNext;
+      const iTop = j + n;
+      const iTopNext = jNext + n;
+      indices.push(iBot, iBotNext, iTopNext);
+      indices.push(iBot, iTopNext, iTop);
+    }
+  }
+
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+function createArchedBeamGeometry(bLen, bWidth, bDepth, vaultHeight, M = 8) {
+  const geom = new THREE.BufferGeometry();
+  const vertices = [];
+  const indices = [];
+
+  for (let k = 0; k <= M; k++) {
+    const t = k / M;
+    const x = -bLen / 2 + bLen * t;
+    const zBot = -bDepth + vaultHeight * 4 * t * (1 - t);
+
+    // 0: top-left
+    vertices.push(x, -bWidth / 2, 0);
+    // 1: top-right
+    vertices.push(x, bWidth / 2, 0);
+    // 2: bottom-right
+    vertices.push(x, bWidth / 2, zBot);
+    // 3: bottom-left
+    vertices.push(x, -bWidth / 2, zBot);
+  }
+
+  for (let k = 0; k < M; k++) {
+    const i = k * 4;
+    const next = (k + 1) * 4;
+
+    // Top face (pointing in +z)
+    indices.push(i + 0, next + 0, next + 1);
+    indices.push(i + 0, next + 1, i + 1);
+
+    // Bottom face (pointing in -z)
+    indices.push(i + 3, next + 3, next + 2);
+    indices.push(i + 3, next + 2, i + 2);
+
+    // Left face (pointing in -y)
+    indices.push(i + 3, next + 3, next + 0);
+    indices.push(i + 3, next + 0, i + 0);
+
+    // Right face (pointing in +y)
+    indices.push(i + 1, i + 2, next + 2);
+    indices.push(i + 1, next + 2, next + 1);
+  }
+
+  // Start cap (k = 0)
+  indices.push(0, 3, 2);
+  indices.push(0, 2, 1);
+
+  // End cap (k = M)
+  const last = M * 4;
+  indices.push(last + 1, last + 2, last + 3);
+  indices.push(last + 1, last + 3, last + 0);
+
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+function isBoundaryVertex(pt, boundaryPolygon) {
+  return boundaryPolygon.some(bp => Math.hypot(pt.x - bp.x, pt.y - bp.y) < 0.1);
+}
+
+function isPrunedSkeletonInteriorPoint(pt, skeletonData) {
+  if (!skeletonData || !skeletonData.simplifiedSegments) return false;
+  const prunedSegments = skeletonData.simplifiedSegments.filter(seg => !(seg.start.isEndPoint || seg.end.isEndPoint));
+  for (const seg of prunedSegments) {
+    if (Math.hypot(pt.x - seg.start.x, pt.y - seg.start.y) < 0.05) {
+      return true;
+    }
+    if (Math.hypot(pt.x - seg.end.x, pt.y - seg.end.y) < 0.05) {
+      return true;
+    }
+    if (seg.divisionPoints) {
+      for (const dp of seg.divisionPoints) {
+        if (Math.hypot(pt.x - dp.x, pt.y - dp.y) < 0.05) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+
+
 function createVaultedSlabGeometry(cell, zTop, depth, vaultHeight, cellHasCorner, boundaryPolygon, boundaryNormals) {
   const geom = new THREE.BufferGeometry();
   const vertices = [];
@@ -2030,7 +2610,8 @@ function createVaultedSlabGeometry(cell, zTop, depth, vaultHeight, cellHasCorner
         const vFlare = flareStart * (1 - tSeg) + flareEnd * tSeg;
         const cellFlare = cellHasCorner ? 1.0 : 0.0;
         const hCenter = vaultHeight * (1 - 0.8 * cellFlare);
-        const hBoundary = vaultHeight * vFlare * cellFlare;
+        const archFactor = 4 * tSeg * (1 - tSeg);
+        const hBoundary = vaultHeight * vFlare * cellFlare + vaultHeight * (1 - vFlare) * archFactor;
         const heightFactor = hCenter * (1 - tCent * tCent) + hBoundary * tCent * tCent;
         const z = zTop - depth + heightFactor;
         
@@ -2060,7 +2641,7 @@ function createVaultedSlabGeometry(cell, zTop, depth, vaultHeight, cellHasCorner
     globalIdx += ((M + 1) * (M + 2)) / 2;
   }
   
-  const bottomVertOffset = vertices.length / 3;
+  const bottomVertOffset = topVertCount;
   for (let k = 0; k < cellVertices.length; k += 3) {
     vertices.push(cellVertices[k], cellVertices[k+1], cellVertices[k+2]);
   }
@@ -2068,19 +2649,34 @@ function createVaultedSlabGeometry(cell, zTop, depth, vaultHeight, cellHasCorner
     indices.push(bottomVertOffset + cellIndices[k+2], bottomVertOffset + cellIndices[k+1], bottomVertOffset + cellIndices[k]);
   }
   
-  const sideVertOffset = vertices.length / 3;
+  let segmentGlobalIdx = 0;
   for (let j = 0; j < cell.length; j++) {
-    vertices.push(cell[j].x, cell[j].y, zTop);
-    vertices.push(cell[j].x, cell[j].y, zTop - depth);
-  }
-  for (let j = 0; j < cell.length; j++) {
-    const jNext = (j + 1) % cell.length;
-    const t1 = sideVertOffset + 2 * j;
-    const b1 = sideVertOffset + 2 * j + 1;
-    const t2 = sideVertOffset + 2 * jNext;
-    const b2 = sideVertOffset + 2 * jNext + 1;
-    indices.push(t1, t2, b2);
-    indices.push(t1, b2, b1);
+    const p1 = cell[j];
+    const p2 = cell[(j + 1) % cell.length];
+    
+    const segmentTopStartIdx = vertices.length / 3;
+    for (let v = 0; v <= M; v++) {
+      const tx = p1.x + (p2.x - p1.x) * (v / M);
+      const ty = p1.y + (p2.y - p1.y) * (v / M);
+      vertices.push(tx, ty, zTop);
+    }
+    
+    const getIdx = (u, v) => {
+      const rowStart = (u * (u + 1)) / 2;
+      return segmentGlobalIdx + rowStart + v;
+    };
+    
+    for (let v = 0; v < M; v++) {
+      const topLeft = segmentTopStartIdx + v;
+      const topRight = segmentTopStartIdx + v + 1;
+      const bottomRight = bottomVertOffset + getIdx(M, v + 1);
+      const bottomLeft = bottomVertOffset + getIdx(M, v);
+      
+      indices.push(topLeft, bottomLeft, bottomRight);
+      indices.push(topLeft, bottomRight, topRight);
+    }
+    
+    segmentGlobalIdx += ((M + 1) * (M + 2)) / 2;
   }
   
   geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -2111,15 +2707,13 @@ function build3DStack() {
 
   const numFloors = state.numFloors;
   const floorHeight = state.floorHeight;
+  const bipartiteData = computeBipartiteVertexHeights(state.structuralBays);
 
   // Materials
-  const slabMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0 });
-  const columnMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0 });
-  const beamMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0 });
-  const balconySlabMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0 });
-  const railingMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
-  const louverMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0 });
-  const vaultMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
+  const concreteMat = new THREE.MeshStandardMaterial({ color: 0x78716c, roughness: 0.8, metalness: 0.1 });
+  const concreteMatDouble = new THREE.MeshStandardMaterial({ color: 0x78716c, roughness: 0.8, metalness: 0.1, side: THREE.DoubleSide });
+  const timberMat = new THREE.MeshStandardMaterial({ color: 0x854d0e, roughness: 0.9, metalness: 0.0 });
+  const timberMatDouble = new THREE.MeshStandardMaterial({ color: 0x854d0e, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
   const vaultWireframeMat = new THREE.MeshBasicMaterial({
     color: 0xcccccc,
     wireframe: true,
@@ -2315,16 +2909,37 @@ function build3DStack() {
           else if (hasOpenSpace) classification = 'open_space';
         }
 
-        let colorHex = '#64748b'; // Cool Grey for interior
-        if (classification === 'corner') colorHex = '#8b5cf6'; // Violet
-        else if (classification === 'courtyard') colorHex = '#10b981'; // Emerald
-        else if (classification === 'neighbor') colorHex = '#f59e0b'; // Amber
-        else if (classification === 'open_space') colorHex = '#0ea5e9'; // Sky Blue
-
         for (let f = 0; f < numFloors; f++) {
           const floorZ = getFloorZ(f, numFloors, floorHeight, state.groundFloorHeightFactor);
           const bowedPoly = bowedPolygonsByFloor[f];
           const warpedCell = getWarpedCell(cell, state.polygon, bowedPoly);
+
+          // Color calculation along three axes
+          let L = 55; // intermediate default
+          if (f === 0) L = 35; // ground
+          else if (f === numFloors - 1) L = 75; // roof
+
+          let S = 30; // middle default
+          if (classification === 'corner') S = 90;
+          else if (classification === 'courtyard') S = 60;
+
+          let H = 60; // default (interior/none)
+          const hasN = directionsArray.includes('North');
+          const hasS = directionsArray.includes('South');
+          const hasE = directionsArray.includes('East');
+          const hasW = directionsArray.includes('West');
+
+          if (hasN && hasE) H = 45;
+          else if (hasS && hasE) H = 135;
+          else if (hasS && hasW) H = 225;
+          else if (hasN && hasW) H = 315;
+          else if (hasN) H = 0;
+          else if (hasE) H = 90;
+          else if (hasS) H = 180;
+          else if (hasW) H = 270;
+
+          const colorHex = `hsl(${H}, ${S}%, ${L}%)`;
+
           item.structuralBays3D.push({
             id: `${item.id}_bay_${cellIdx}_floor_${f}`,
             cellIdx: cellIdx,
@@ -2404,54 +3019,118 @@ function build3DStack() {
       // 1. Floor Slabs
       if (state.showFloorSlabs) {
         // Vaulted floor slab at the bottom of the floor
-        state.structuralBays.forEach((cell, cellIdx) => {
-          const isCorner = cellIsCorner[cellIdx];
-          if (isCorner && i < 2) return;
+        if (i > 0) {
+          state.structuralBays.forEach((cell, cellIdx) => {
+            const isCorner = cellIsCorner[cellIdx];
+            if (isCorner && i < 1) return;
 
-          const warpedCell = getWarpedCell(cell, state.polygon, floorPolygon);
-          const isGround = (i === 0);
-          const cellHasCorner = cell.some(pt => {
-            return state.polygon.some(bp => Math.hypot(pt.x - bp.x, pt.y - bp.y) < 0.1);
+            const warpedCell = getWarpedCell(cell, state.polygon, floorPolygon);
+            const isGround = (i === 0);
+            const cellHasCorner = cell.some(pt => {
+              return state.polygon.some(bp => Math.hypot(pt.x - bp.x, pt.y - bp.y) < 0.1);
+            });
+            const slabThick = isGround ? state.slabThickness * 1.5 : state.slabThickness;
+            const depth = (i === 1) ? 3 * (slabThick + state.beamDepth) : (slabThick + state.beamDepth);
+            const vaultH = (i === 1) ? 3 * state.beamDepth : state.beamDepth;
+            const slabGeom = createVaultedSlabGeometry(warpedCell, floorZ.bottom, depth, vaultH, cellHasCorner, state.polygon, boundaryNormals);
+            const slabMesh = new THREE.Mesh(slabGeom, (i === 1) ? concreteMatDouble : timberMatDouble);
+            slabMesh.position.z = 0;
+            
+            slabMesh.userData = { 
+              is3DStackMesh: true, 
+              polygonId: item.id,
+              materialGroup: (i === 1) ? 'concrete_masonry' : 'tectonic_timber'
+            };
+            stack3DGroup.add(slabMesh);
           });
-          const slabThick = isGround ? state.slabThickness * 1.5 : state.slabThickness;
-          const depth = slabThick + state.beamDepth;
-          const vaultH = state.beamDepth;
-          const slabGeom = createVaultedSlabGeometry(warpedCell, floorZ.bottom, depth, vaultH, cellHasCorner, state.polygon, boundaryNormals);
-          const slabMesh = new THREE.Mesh(slabGeom, slabMat);
-          slabMesh.position.z = 0;
-          
-          slabMesh.userData = { is3DStackMesh: true, polygonId: item.id };
-          stack3DGroup.add(slabMesh);
-        });
+        }
+      }
 
-        // Flat cantilevered roof slab at the top of the topmost floor
-        if (isRoofFloor) {
-          if (floorPolygon && floorPolygon.length >= 3) {
-            const cantileveredPoly = [];
-            for (let j = 0; j < floorPolygon.length; j++) {
-              const V = floorPolygon[j];
-              const prevIdx = (j - 1 + floorPolygon.length) % floorPolygon.length;
-              const currIdx = j;
-              const n1 = boundaryNormals[prevIdx];
-              const n2 = boundaryNormals[currIdx];
-              const c1 = getCantileverDistance(n1);
-              const c2 = getCantileverDistance(n2);
-              const avgC = (c1 + c2) / 2;
-              const avgNorm = new Vector2D(n1.x + n2.x, n1.y + n2.y).normalize();
-              cantileveredPoly.push(new Vector2D(V.x + avgNorm.x * avgC, V.y + avgNorm.y * avgC));
-            }
-            const roofShape = new THREE.Shape();
-            roofShape.moveTo(cantileveredPoly[0].x, cantileveredPoly[0].y);
-            for (let j = 1; j < cantileveredPoly.length; j++) {
-              roofShape.lineTo(cantileveredPoly[j].x, cantileveredPoly[j].y);
-            }
-            roofShape.closePath();
-            const roofGeom = new THREE.ExtrudeGeometry(roofShape, { depth: state.slabThickness * 0.8, bevelEnabled: false });
-            const roofMesh = new THREE.Mesh(roofGeom, slabMat);
-            roofMesh.position.z = floorZ.top - state.slabThickness * 0.8;
-            roofMesh.userData = { is3DStackMesh: true, polygonId: item.id };
-            stack3DGroup.add(roofMesh);
+      // Flat cantilevered roof slab at the top of the topmost floor (split into concrete top / timber bottom)
+      if (state.showRoofSlab && isRoofFloor) {
+        if (floorPolygon && floorPolygon.length >= 3) {
+          const cantileveredPoly = [];
+          for (let j = 0; j < floorPolygon.length; j++) {
+            const V = floorPolygon[j];
+            const prevIdx = (j - 1 + floorPolygon.length) % floorPolygon.length;
+            const currIdx = j;
+            const n1 = boundaryNormals[prevIdx];
+            const n2 = boundaryNormals[currIdx];
+            const c1 = getCantileverDistance(n1);
+            const c2 = getCantileverDistance(n2);
+            const avgC = (c1 + c2) / 2;
+            const avgNorm = new Vector2D(n1.x + n2.x, n1.y + n2.y).normalize();
+            cantileveredPoly.push(new Vector2D(V.x + avgNorm.x * avgC * state.cantileverScale, V.y + avgNorm.y * avgC * state.cantileverScale));
           }
+          const roofShape = new THREE.Shape();
+          roofShape.moveTo(cantileveredPoly[0].x, cantileveredPoly[0].y);
+          for (let j = 1; j < cantileveredPoly.length; j++) {
+            roofShape.lineTo(cantileveredPoly[j].x, cantileveredPoly[j].y);
+          }
+          roofShape.closePath();
+
+          // Build cantilevered cells
+          const cantileveredCells = [];
+          for (let j = 0; j < floorPolygon.length; j++) {
+            const jNext = (j + 1) % floorPolygon.length;
+            cantileveredCells.push([
+              floorPolygon[j],
+              floorPolygon[jNext],
+              cantileveredPoly[jNext],
+              cantileveredPoly[j]
+            ]);
+          }
+
+          // Warped cells of structural bays and cantilevered cells to floor coordinates
+          const warpedBays = (state.unprunedStructuralBays || []).map(cell => getWarpedCell(cell, state.polygon, floorPolygon));
+          const warpedCantCells = cantileveredCells;
+
+          // 1. Create timber roof mesh M
+          const timberRoofGeom = createRoofSheetGeometry(warpedBays, warpedCantCells, floorZ.top, state.roofPitchRH, false);
+          const timberRoofMesh = new THREE.Mesh(timberRoofGeom, timberMatDouble);
+          timberRoofMesh.position.z = 0;
+          timberRoofMesh.userData = { 
+            is3DStackMesh: true, 
+            polygonId: item.id,
+            materialGroup: 'tectonic_timber'
+          };
+          stack3DGroup.add(timberRoofMesh);
+
+          // 2. Create concrete roof mesh MC (copy of M moved up by RH)
+          const concreteRoofGeom = createRoofSheetGeometry(warpedBays, warpedCantCells, floorZ.top, state.roofPitchRH, true);
+          const concreteRoofMesh = new THREE.Mesh(concreteRoofGeom, concreteMatDouble);
+          concreteRoofMesh.position.z = 0;
+          concreteRoofMesh.userData = { 
+            is3DStackMesh: true, 
+            polygonId: item.id,
+            materialGroup: 'concrete_masonry'
+          };
+          stack3DGroup.add(concreteRoofMesh);
+        }
+      }
+
+      // Hypar ceilings under the roof (Roof floor only, inside unpruned structural bays)
+      if (state.showVaultedRoofs && isRoofFloor) {
+        if (floorPolygon && floorPolygon.length >= 3) {
+          const warpedBays = (state.unprunedStructuralBays || []).map(cell => getWarpedCell(cell, state.polygon, floorPolygon));
+          const bipartiteData = computeBipartiteVertexHeights(state.unprunedStructuralBays || []);
+
+          (state.unprunedStructuralBays || []).forEach((cell, cellIdx) => {
+            const warpedCell = warpedBays[cellIdx];
+            const originalCell = cell;
+
+            const zTopVal = floorZ.top;
+            const zBottomVal = floorZ.top - state.roofHyparH;
+
+            const hyparGeom = createHyparCellGeometry(warpedCell, zTopVal, zBottomVal, state.roofHyparH, state.roofHyparSlatSpacing, bipartiteData, originalCell);
+            const hyparMesh = new THREE.Mesh(hyparGeom, timberMatDouble);
+            hyparMesh.userData = { 
+              is3DStackMesh: true, 
+              polygonId: item.id,
+              materialGroup: 'tectonic_timber'
+            };
+            stack3DGroup.add(hyparMesh);
+          });
         }
       }
 
@@ -2469,9 +3148,6 @@ function build3DStack() {
         }
         const colRad = state.columnRadius * tapFactor;
 
-        const colGeom = new THREE.CylinderGeometry(colRad, colRad, colHeight, 16);
-        colGeom.rotateX(Math.PI / 2);
-
         const lWidth = colRad * 2.2;
         const lThick = colRad * 0.8;
         const lShape = new THREE.Shape();
@@ -2482,7 +3158,6 @@ function build3DStack() {
         lShape.lineTo(-lWidth/2 + lThick, lWidth/2);
         lShape.lineTo(-lWidth/2, lWidth/2);
         lShape.closePath();
-        const cornerGeom = new THREE.ExtrudeGeometry(lShape, { depth: colHeight, bevelEnabled: false });
 
         warpedVertices.forEach((v, idx) => {
           let isDuplicate = false;
@@ -2496,32 +3171,60 @@ function build3DStack() {
           columnsByFloor[i].push({ x: v.x, y: v.y });
 
           let isCornerVertex = false;
+          let cornerIdx = -1;
           const origV = vertices[idx];
-          for (const bp of state.polygon) {
+          for (let j = 0; j < state.polygon.length; j++) {
+            const bp = state.polygon[j];
             if (Math.hypot(origV.x - bp.x, origV.y - bp.y) < 0.1) {
               isCornerVertex = true;
+              cornerIdx = j;
               break;
             }
+          }
+
+          let colRotAngle = 0;
+          if (isCornerVertex && cornerIdx !== -1) {
+            const N = state.polygon.length;
+            const nPrev = boundaryNormals[(cornerIdx - 1 + N) % N];
+            const nCurr = boundaryNormals[cornerIdx];
+            const bisectX = (nPrev.x + nCurr.x) / 2;
+            const bisectY = (nPrev.y + nCurr.y) / 2;
+            const len = Math.hypot(bisectX, bisectY);
+            const bisectAngle = len > 1e-6 ? Math.atan2(bisectY, bisectX) : 0;
+            colRotAngle = bisectAngle - 5 * Math.PI / 4;
           }
 
           const isCourtyard = courtyardVertexIndices.has(idx);
           const isFin = exteriorWestSouthVertexIndices.has(idx);
 
+          let colH = colHeight;
+
           const renderCol = (posX, posY, rotAngle, forceCylinder = false) => {
             let mesh;
+            const currentColumnMat = (i === 0) ? concreteMat : timberMat;
             if (isFin && !forceCylinder) {
-              const finGeom = new THREE.BoxGeometry(2.0, 0.3, colHeight);
-              mesh = new THREE.Mesh(finGeom, columnMat);
-              mesh.position.set(posX, posY, floorZ.bottom + colHeight / 2);
+              const finWidth = 2.0;
+              const finThick = 0.3;
+              const finGeom = new THREE.BoxGeometry(finWidth, finThick, colH);
+              mesh = new THREE.Mesh(finGeom, currentColumnMat);
+              mesh.position.set(posX, posY, floorZ.bottom + colH / 2);
               mesh.rotation.z = rotAngle;
             } else if (isCornerVertex && !forceCylinder) {
-              mesh = new THREE.Mesh(cornerGeom, columnMat);
+              const cornerGeom = new THREE.ExtrudeGeometry(lShape, { depth: colH, bevelEnabled: false });
+              mesh = new THREE.Mesh(cornerGeom, currentColumnMat);
               mesh.position.set(posX, posY, floorZ.bottom);
+              mesh.rotation.z = rotAngle;
             } else {
-              mesh = new THREE.Mesh(colGeom, columnMat);
-              mesh.position.set(posX, posY, floorZ.bottom + colHeight / 2);
+              const colGeom = new THREE.CylinderGeometry(colRad, colRad, colH, 16);
+              colGeom.rotateX(Math.PI / 2);
+              mesh = new THREE.Mesh(colGeom, currentColumnMat);
+              mesh.position.set(posX, posY, floorZ.bottom + colH / 2);
             }
-            mesh.userData = { is3DStackMesh: true, polygonId: item.id };
+            mesh.userData = { 
+              is3DStackMesh: true, 
+              polygonId: item.id,
+              materialGroup: (i === 0) ? 'concrete_masonry' : 'tectonic_timber'
+            };
             stack3DGroup.add(mesh);
           };
 
@@ -2533,25 +3236,24 @@ function build3DStack() {
             renderCol(dupX, dupY, 0, true);
           } else if (isFin) {
             const normal = exteriorWestSouthNormals.get(idx);
-            const angle = Math.atan2(normal.y, normal.x);
-            renderCol(v.x, v.y, angle, false);
+            const rot = Math.atan2(normal.y, normal.x);
+            renderCol(v.x, v.y, rot, false);
+          } else if (isCornerVertex) {
+            renderCol(v.x, v.y, colRotAngle, false);
           } else {
             renderCol(v.x, v.y, 0, false);
           }
         });
-
-        colGeom.dispose();
-        cornerGeom.dispose();
       }
 
       // 3. Beams
-      if (state.show3DBeams) {
+      if (state.show3DBeams && i >= 1) {
         let tapFactor = 1.0;
         if (numFloors > 1) {
           tapFactor = 1.3 - 0.5 * (i / (numFloors - 1));
         }
-        const bWidth = state.beamWidth * tapFactor;
-        const bDepth = state.beamDepth * tapFactor;
+        const bWidth = (i === 1) ? 0.3 : (state.beamWidth * tapFactor);
+        const bDepth = (i === 1) ? (3 * state.beamDepth * tapFactor) : (state.beamDepth * tapFactor);
 
         let slabThick = state.slabThickness;
         if (isGroundFloor) slabThick = state.slabThickness * 1.5;
@@ -2583,15 +3285,43 @@ function build3DStack() {
 
             const mX = (pA.x + pB.x) / 2;
             const mY = (pA.y + pB.y) / 2;
-            const mZ = floorZ.bottom - slabThick - bDepth / 2;
 
-            const beamGeom = new THREE.BoxGeometry(bLen, bWidth, bDepth);
-            const beamMesh = new THREE.Mesh(beamGeom, beamMat);
+            let beamIsArched = (i === 1);
+            if (!beamIsArched && state.structuralBays) {
+              for (let c = 0; c < state.structuralBays.length; c++) {
+                const cell = state.structuralBays[c];
+                const vaulted = !(cellIsCorner[c] && i < 1);
+                if (vaulted) {
+                  const hasU = cell.some(pt => Math.hypot(pt.x - pA.x, pt.y - pA.y) < 0.1);
+                  const hasV = cell.some(pt => Math.hypot(pt.x - pB.x, pt.y - pB.y) < 0.1);
+                  if (hasU && hasV) {
+                    beamIsArched = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            let beamGeom;
+            let mZ;
+            if (beamIsArched) {
+              mZ = floorZ.bottom - slabThick;
+              beamGeom = createArchedBeamGeometry(bLen, bWidth, bDepth, bDepth);
+            } else {
+              mZ = floorZ.bottom - slabThick - bDepth / 2;
+              beamGeom = new THREE.BoxGeometry(bLen, bWidth, bDepth);
+            }
+
+            const currentBeamMat = (i === 1) ? concreteMat : timberMat;
+            const beamMesh = new THREE.Mesh(beamGeom, currentBeamMat);
             beamMesh.position.set(mX, mY, mZ);
             beamMesh.rotation.z = Math.atan2(dY, dX);
-            beamMesh.userData = { is3DStackMesh: true, polygonId: item.id };
+            beamMesh.userData = { 
+              is3DStackMesh: true, 
+              polygonId: item.id,
+              materialGroup: (i === 1) ? 'concrete_masonry' : 'tectonic_timber'
+            };
             stack3DGroup.add(beamMesh);
-            beamGeom.dispose();
           };
 
           renderBeam(ptU, ptV);
@@ -2610,72 +3340,95 @@ function build3DStack() {
 
       // 4. Balconies (NULL on Ground & Roof, NULL if facing other buildings or touching partitions)
       if (state.showBalconies && !isGroundFloor && !isRoofFloor) {
-        for (let j = 0; j < floorPolygon.length; j++) {
-          const p1 = floorPolygon[j];
-          const p2 = floorPolygon[(j + 1) % floorPolygon.length];
-          const normal = boundaryNormals[j];
+        const N = floorPolygon.length;
+        const offsets = [];
+        const hasBalcony = [];
+        for (let j = 0; j < N; j++) {
           const context = segmentContexts[j];
-          const len = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-          if (len < 1e-3) continue;
+          const hasBal = (context !== 'other_building' && context !== 'touching');
+          hasBalcony.push(hasBal);
+          offsets.push(hasBal ? (context === 'courtyard' ? state.balconyOffset * 1.5 : state.balconyOffset) : 0);
+        }
 
-          if (context === 'other_building' || context === 'touching') {
-            continue; // NULL balcony facing neighboring buildings or touching partitions for privacy
+        const deltaOuter = [];
+        const deltaInner = [];
+        const rThick = 0.02;
+
+        for (let j = 0; j < N; j++) {
+          const jPrev = (j - 1 + N) % N;
+          const dPrev = offsets[jPrev];
+          const dCurr = offsets[j];
+          const nPrev = boundaryNormals[jPrev];
+          const nCurr = boundaryNormals[j];
+
+          if (dPrev > 0 && dCurr > 0) {
+            deltaOuter.push(getMiterOffset(nPrev, nCurr, dPrev, dCurr));
+            deltaInner.push(getMiterOffset(nPrev, nCurr, dPrev - rThick, dCurr - rThick));
+          } else if (dPrev > 0) {
+            deltaOuter.push({ x: nPrev.x * dPrev, y: nPrev.y * dPrev });
+            deltaInner.push({ x: nPrev.x * (dPrev - rThick), y: nPrev.y * (dPrev - rThick) });
+          } else if (dCurr > 0) {
+            deltaOuter.push({ x: nCurr.x * dCurr, y: nCurr.y * dCurr });
+            deltaInner.push({ x: nCurr.x * (dCurr - rThick), y: nCurr.y * (dCurr - rThick) });
+          } else {
+            deltaOuter.push({ x: 0, y: 0 });
+            deltaInner.push({ x: 0, y: 0 });
           }
+        }
 
-          let bOffset = state.balconyOffset;
-          if (context === 'courtyard') {
-            bOffset = state.balconyOffset * 1.5; // Deeper social balcony facing courtyard
-          }
+        for (let j = 0; j < N; j++) {
+          if (!hasBalcony[j]) continue;
+          const jNext = (j + 1) % N;
+          const p1 = floorPolygon[j];
+          const p2 = floorPolygon[jNext];
 
-          // Beveled rounded geometry for balconies
-          const halfL = len / 2;
-          const roundedShape = new THREE.Shape();
-          const radius = Math.min(0.8, bOffset * 0.4);
-          roundedShape.moveTo(-halfL, 0);
-          roundedShape.lineTo(-halfL, bOffset - radius);
-          roundedShape.quadraticCurveTo(-halfL, bOffset, -halfL + radius, bOffset);
-          roundedShape.lineTo(halfL - radius, bOffset);
-          roundedShape.quadraticCurveTo(halfL, bOffset, halfL, bOffset - radius);
-          roundedShape.lineTo(halfL, 0);
-          roundedShape.closePath();
+          const oStart = { x: p1.x + deltaOuter[j].x, y: p1.y + deltaOuter[j].y };
+          const oEnd = { x: p2.x + deltaOuter[jNext].x, y: p2.y + deltaOuter[jNext].y };
 
-          const balGeom = new THREE.ExtrudeGeometry(roundedShape, { depth: state.balconyThickness, bevelEnabled: false });
-          const balMesh = new THREE.Mesh(balGeom, balconySlabMat);
-          
-          const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-          const midX = (p1.x + p2.x) / 2;
-          const midY = (p1.y + p2.y) / 2;
-          const midZ = floorZ.bottom - state.balconyThickness;
+          // 1. Balcony Slab Shape (CCW): oStart -> oEnd -> p2 -> p1
+          const balShape = new THREE.Shape();
+          balShape.moveTo(oStart.x, oStart.y);
+          balShape.lineTo(oEnd.x, oEnd.y);
+          balShape.lineTo(p2.x, p2.y);
+          balShape.lineTo(p1.x, p1.y);
+          balShape.closePath();
 
-          balMesh.position.set(midX, midY, midZ);
-          balMesh.rotation.z = angle;
-          balMesh.userData = { is3DStackMesh: true, polygonId: item.id };
+          const balGeom = new THREE.ExtrudeGeometry(balShape, { depth: state.balconyThickness, bevelEnabled: false });
+          const balMesh = new THREE.Mesh(balGeom, timberMat);
+          balMesh.position.z = floorZ.bottom - state.balconyThickness;
+          balMesh.userData = { 
+            is3DStackMesh: true, 
+            polygonId: item.id,
+            materialGroup: 'tectonic_timber'
+          };
           stack3DGroup.add(balMesh);
 
-          // railing along the outer rounded edge
-          const railingHeight = 1.1;
-          const rThick = 0.02;
+          // 2. Railing Shape (CCW): oStart -> oEnd -> iEnd -> iStart
+          const iStart = { x: p1.x + deltaInner[j].x, y: p1.y + deltaInner[j].y };
+          const iEnd = { x: p2.x + deltaInner[jNext].x, y: p2.y + deltaInner[jNext].y };
+
           const railShape = new THREE.Shape();
-          railShape.moveTo(-halfL, bOffset - rThick);
-          railShape.lineTo(halfL, bOffset - rThick);
-          railShape.lineTo(halfL, bOffset);
-          railShape.lineTo(-halfL, bOffset);
+          railShape.moveTo(oStart.x, oStart.y);
+          railShape.lineTo(oEnd.x, oEnd.y);
+          railShape.lineTo(iEnd.x, iEnd.y);
+          railShape.lineTo(iStart.x, iStart.y);
           railShape.closePath();
 
+          const railingHeight = 1.1;
           const railGeom = new THREE.ExtrudeGeometry(railShape, { depth: railingHeight, bevelEnabled: false });
-          const railMesh = new THREE.Mesh(railGeom, railingMat);
-          railMesh.position.set(midX, midY, floorZ.bottom);
-          railMesh.rotation.z = angle;
-          railMesh.userData = { is3DStackMesh: true, polygonId: item.id };
+          const railMesh = new THREE.Mesh(railGeom, timberMatDouble);
+          railMesh.position.z = floorZ.bottom;
+          railMesh.userData = { 
+            is3DStackMesh: true, 
+            polygonId: item.id,
+            materialGroup: 'tectonic_timber'
+          };
           stack3DGroup.add(railMesh);
-
-          balGeom.dispose();
-          railGeom.dispose();
         }
       }
 
-      // 5. Brise-Soleil (NULL on Ground, NULL on North/East facades, NULL on Roof floor)
-      if (state.showBriseSoleil && !isGroundFloor && !isRoofFloor) {
+      // 5. Brise-Soleil (extend to all floors from roof to ground, on south and west sides, Timber group)
+      if (state.showBriseSoleil) {
         const sunDir = new Vector2D(-0.707, -0.707); // Southwest Sun Vector
 
         for (let j = 0; j < floorPolygon.length; j++) {
@@ -2688,21 +3441,13 @@ function build3DStack() {
 
           const alignment = normal.dot(sunDir);
 
-          let bDepth = state.louverDepth;
-          let bSpacing = state.louverSpacing;
-          let active = true;
+          let bDepth = 0.5;
+          let bSpacing = 0.5;
+          let active = (normal.y < -0.5) || (normal.x < -0.5);
 
-          if (context === 'other_building') {
-            bDepth = state.louverDepth * 0.8;
-            bSpacing = state.louverSpacing * 0.6; // Dense privacy screening
-          } else if (context === 'courtyard' || context === 'touching') {
-            active = false; // NULL brise-soleil to keep courtyard views open / touching
-          } else {
-            if (alignment > 0) {
-              bDepth = state.louverDepth * (0.3 + 1.2 * alignment); // Solar alignment gradient
-              bSpacing = state.louverSpacing * (1.2 - 0.5 * alignment);
-            } else {
-              active = false; // NULL brise-soleil on shaded facades
+          if (active) {
+            if (context === 'courtyard' || context === 'touching') {
+              active = false; // NULL brise-soleil to keep courtyard views open / touching
             }
           }
 
@@ -2711,11 +3456,11 @@ function build3DStack() {
           const numLouvers = Math.max(2, Math.floor(len / bSpacing));
           
           let slabThick = state.slabThickness;
-          if (isGroundFloor) slabThick = state.slabThickness * 1.5;
+          if (isRoofFloor) slabThick = state.slabThickness * 0.8;
           const lHeight = floorZ.height - slabThick;
 
           // Aerofoil Diamond shape louvers (CAGD)
-          const lWidth = state.louverWidth;
+          const lWidth = state.louverWidth * state.briseFinScale;
           const foilShape = new THREE.Shape();
           foilShape.moveTo(0, -bDepth/2);
           foilShape.quadraticCurveTo(lWidth/2, 0, 0, bDepth/2);
@@ -2729,15 +3474,16 @@ function build3DStack() {
             const lx = p1.x + (p2.x - p1.x) * t + normal.x * 0.15;
             const ly = p1.y + (p2.y - p1.y) * t + normal.y * 0.15;
             
-            const lMesh = new THREE.Mesh(louverGeom, louverMat);
+            const lMesh = new THREE.Mesh(louverGeom, timberMat);
             lMesh.position.set(lx, ly, floorZ.bottom);
-            const segmentAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-            lMesh.rotation.z = segmentAngle;
-            lMesh.userData = { is3DStackMesh: true, polygonId: item.id };
+            lMesh.rotation.z = -120 * Math.PI / 180; // incline at 60 degrees east of cardinal south direction
+            lMesh.userData = { 
+              is3DStackMesh: true, 
+              polygonId: item.id,
+              materialGroup: 'tectonic_timber'
+            };
             stack3DGroup.add(lMesh);
           }
-          
-          louverGeom.dispose();
         }
       }
     }
@@ -2763,12 +3509,11 @@ function build3DStack() {
         const colorVal = new THREE.Color(cell3d.color);
         const cellVolumeMat = new THREE.MeshStandardMaterial({
           color: colorVal,
-          transparent: true,
-          opacity: 0.12,
-          roughness: 0.2,
+          transparent: false,
+          roughness: 0.5,
           metalness: 0.1,
           side: THREE.DoubleSide,
-          depthWrite: false
+          depthWrite: true
         });
 
         const cellVolumeMesh = new THREE.Mesh(cellVolumeGeom, cellVolumeMat);
@@ -3336,6 +4081,22 @@ function setupRhinoUIControls() {
     });
   }
 
+  const chkRoof = document.getElementById('chk-3d-roof');
+  if (chkRoof) {
+    chkRoof.addEventListener('change', (e) => {
+      state.showRoofSlab = e.target.checked;
+      draw();
+    });
+  }
+
+  const chkVaults = document.getElementById('chk-3d-vaults');
+  if (chkVaults) {
+    chkVaults.addEventListener('change', (e) => {
+      state.showVaultedRoofs = e.target.checked;
+      draw();
+    });
+  }
+
   const chkBalconies = document.getElementById('chk-3d-balconies');
   if (chkBalconies) {
     chkBalconies.addEventListener('change', (e) => {
@@ -3352,13 +4113,6 @@ function setupRhinoUIControls() {
     });
   }
 
-  const chkVaults = document.getElementById('chk-3d-vaults');
-  if (chkVaults) {
-    chkVaults.addEventListener('change', (e) => {
-      state.showVaultedRoofs = e.target.checked;
-      draw();
-    });
-  }
 
   const chkCells = document.getElementById('chk-3d-cells');
   if (chkCells) {
@@ -3384,15 +4138,25 @@ function setupRhinoUIControls() {
   // Tab Switching Logic
   const btnTabWorkflow = document.getElementById('btn-tab-workflow');
   const btnTabShading = document.getElementById('btn-tab-shading');
+  const btnTabAiRender = document.getElementById('btn-tab-ai-render');
+  const btnTabShapeGrammar = document.getElementById('btn-tab-shape-grammar');
   const tabContentWorkflow = document.getElementById('tab-content-workflow');
   const tabContentShading = document.getElementById('tab-content-shading');
+  const tabContentAiRender = document.getElementById('tab-content-ai-render');
+  const tabContentShapeGrammar = document.getElementById('tab-content-shape-grammar');
 
-  if (btnTabWorkflow && btnTabShading && tabContentWorkflow && tabContentShading) {
+  if (btnTabWorkflow && btnTabShading && btnTabAiRender && btnTabShapeGrammar &&
+      tabContentWorkflow && tabContentShading && tabContentAiRender && tabContentShapeGrammar) {
+
     btnTabWorkflow.addEventListener('click', () => {
       btnTabWorkflow.classList.add('active');
       btnTabShading.classList.remove('active');
+      btnTabAiRender.classList.remove('active');
+      btnTabShapeGrammar.classList.remove('active');
       tabContentWorkflow.style.display = 'flex';
       tabContentShading.style.display = 'none';
+      tabContentAiRender.style.display = 'none';
+      tabContentShapeGrammar.style.display = 'none';
 
       // Restore Workflow Visibilities
       if (meshesGroup) meshesGroup.visible = true;
@@ -3404,8 +4168,12 @@ function setupRhinoUIControls() {
     btnTabShading.addEventListener('click', () => {
       btnTabShading.classList.add('active');
       btnTabWorkflow.classList.remove('active');
+      btnTabAiRender.classList.remove('active');
+      btnTabShapeGrammar.classList.remove('active');
       tabContentShading.style.display = 'flex';
       tabContentWorkflow.style.display = 'none';
+      tabContentAiRender.style.display = 'none';
+      tabContentShapeGrammar.style.display = 'none';
 
       // Apply Shading Visibilities (Rhino Arctic style)
       if (meshesGroup) meshesGroup.visible = false;
@@ -3413,6 +4181,41 @@ function setupRhinoUIControls() {
       if (transformControls) transformControls.detach();
       if (gridHelper) gridHelper.visible = state.showGridHelper;
       if (groundMesh) groundMesh.visible = state.showGroundPlane;
+    });
+
+    btnTabAiRender.addEventListener('click', () => {
+      btnTabAiRender.classList.add('active');
+      btnTabWorkflow.classList.remove('active');
+      btnTabShading.classList.remove('active');
+      btnTabShapeGrammar.classList.remove('active');
+      tabContentAiRender.style.display = 'flex';
+      tabContentWorkflow.style.display = 'none';
+      tabContentShading.style.display = 'none';
+      tabContentShapeGrammar.style.display = 'none';
+
+      // Apply Shading Visibilities (Rhino Arctic style) so that the user sees the clean model
+      if (meshesGroup) meshesGroup.visible = false;
+      if (rhinoGroup) rhinoGroup.visible = false;
+      if (transformControls) transformControls.detach();
+      if (gridHelper) gridHelper.visible = state.showGridHelper;
+      if (groundMesh) groundMesh.visible = state.showGroundPlane;
+    });
+
+    btnTabShapeGrammar.addEventListener('click', () => {
+      btnTabShapeGrammar.classList.add('active');
+      btnTabWorkflow.classList.remove('active');
+      btnTabShading.classList.remove('active');
+      btnTabAiRender.classList.remove('active');
+      tabContentShapeGrammar.style.display = 'flex';
+      tabContentWorkflow.style.display = 'none';
+      tabContentShading.style.display = 'none';
+      tabContentAiRender.style.display = 'none';
+
+      // Restore Workflow Visibilities for editing
+      if (meshesGroup) meshesGroup.visible = true;
+      if (rhinoGroup) rhinoGroup.visible = true;
+      if (gridHelper) gridHelper.visible = true;
+      if (groundMesh) groundMesh.visible = false;
     });
   }
 
@@ -3523,6 +4326,30 @@ function setupRhinoUIControls() {
     });
   }
 
+  // --- Shape Grammar Parameters Event Listeners ---
+  
+  // Roof Cantilever Scale Slider
+  const sliderCantileverScale = document.getElementById('slider-cantilever-scale');
+  const valCantileverScale = document.getElementById('val-cantilever-scale');
+  if (sliderCantileverScale && valCantileverScale) {
+    sliderCantileverScale.addEventListener('input', (e) => {
+      state.cantileverScale = parseFloat(e.target.value);
+      valCantileverScale.innerText = state.cantileverScale.toFixed(1);
+      draw();
+    });
+  }
+
+  // Brise Soleil Fin Scale Slider
+  const sliderBriseFinScale = document.getElementById('slider-brise-fin-scale');
+  const valBriseFinScale = document.getElementById('val-brise-fin-scale');
+  if (sliderBriseFinScale && valBriseFinScale) {
+    sliderBriseFinScale.addEventListener('input', (e) => {
+      state.briseFinScale = parseFloat(e.target.value);
+      valBriseFinScale.innerText = state.briseFinScale.toFixed(1);
+      draw();
+    });
+  }
+
   // Show Grid Helper Toggle
   const chkGridHelper = document.getElementById('chk-grid-helper');
   if (chkGridHelper) {
@@ -3533,6 +4360,50 @@ function setupRhinoUIControls() {
       }
     });
   }
+
+  // Roof Hypar H Slider
+  const sliderRoofHyparH = document.getElementById('slider-roof-hypar-h');
+  const valRoofHyparH = document.getElementById('val-roof-hypar-h');
+  if (sliderRoofHyparH && valRoofHyparH) {
+    sliderRoofHyparH.addEventListener('input', (e) => {
+      state.roofHyparH = parseFloat(e.target.value);
+      valRoofHyparH.innerText = `${state.roofHyparH.toFixed(1)}m`;
+      draw();
+    });
+  }
+
+  // Inverted Roof Pitch RH Slider
+  const sliderRoofPitchRH = document.getElementById('slider-roof-pitch-rh');
+  const valRoofPitchRH = document.getElementById('val-roof-pitch-rh');
+  if (sliderRoofPitchRH && valRoofPitchRH) {
+    sliderRoofPitchRH.addEventListener('input', (e) => {
+      state.roofPitchRH = parseFloat(e.target.value);
+      valRoofPitchRH.innerText = `${state.roofPitchRH.toFixed(1)}m`;
+      draw();
+    });
+  }
+
+  // Roof Hypar Slat Spacing Slider
+  const sliderRoofHyparSpacing = document.getElementById('slider-roof-hypar-spacing');
+  const valRoofHyparSpacing = document.getElementById('val-roof-hypar-spacing');
+  if (sliderRoofHyparSpacing && valRoofHyparSpacing) {
+    sliderRoofHyparSpacing.addEventListener('input', (e) => {
+      state.roofHyparSlatSpacing = parseFloat(e.target.value);
+      valRoofHyparSpacing.innerText = `${state.roofHyparSlatSpacing.toFixed(1)}m`;
+      draw();
+    });
+  }
+
+  // Display Mode Select
+  const selectDisplayMode = document.getElementById('display-mode-select');
+  if (selectDisplayMode) {
+    selectDisplayMode.addEventListener('change', (e) => {
+      setDisplayMode(e.target.value);
+    });
+  }
+
+  // Set up Imagen controls
+  setupImagenControls();
 }
 
 // Mouse Event Handlers using 3D Raycasting
@@ -3830,19 +4701,284 @@ function animate() {
   // Update controls with smooth damping
   controls.update();
   
-  // Dynamic normalized SSAO depth ranges based on camera clip planes
-  if (ssaoPass && cameraActive) {
+  // If rendering depth, update depth shader range uniforms dynamically based on current camera view
+  if (scene.overrideMaterial === depthMaterial && depthMaterial) {
+    const range = getDepthRange();
+    depthMaterial.uniforms.cameraNear.value = range.min;
+    depthMaterial.uniforms.cameraFar.value = range.max;
+  } else if (ssaoPass && cameraActive) {
+    // Dynamic normalized SSAO depth ranges based on camera clip planes
     const depthRange = cameraActive.far - cameraActive.near;
     ssaoPass.minDistance = state.ssaoMinDistance / depthRange;
     ssaoPass.maxDistance = state.ssaoMaxDistance / depthRange;
   }
   
-  // Render frame
-  if (composer) {
+  // Render frame: in depth mode, render directly using raw renderer to bypass composer SSAO pass
+  if (scene.overrideMaterial === depthMaterial) {
+    renderer.render(scene, cameraActive);
+  } else if (composer) {
     composer.render();
   } else {
     renderer.render(scene, cameraActive);
   }
+}
+
+let depthMaterial = null;
+let _gizmoWasVisible = true;
+let _gridWasVisible = true;
+
+function getDepthRange() {
+  const box = new THREE.Box3();
+  
+  if (meshesGroup) box.expandByObject(meshesGroup);
+  if (stack3DGroup) box.expandByObject(stack3DGroup);
+  if (rhinoGroup) box.expandByObject(rhinoGroup);
+  
+  if (box.isEmpty()) {
+    return { min: cameraActive.near, max: cameraActive.far };
+  }
+  
+  const corners = [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z)
+  ];
+  
+  let minDepth = Infinity;
+  let maxDepth = -Infinity;
+  
+  const viewMatrix = cameraActive.matrixWorldInverse;
+  
+  corners.forEach(corner => {
+    corner.applyMatrix4(viewMatrix);
+    const depth = -corner.z;
+    if (depth < minDepth) minDepth = depth;
+    if (depth > maxDepth) maxDepth = depth;
+  });
+  
+  minDepth = Math.max(cameraActive.near, minDepth - 5.0);
+  maxDepth = Math.min(cameraActive.far, maxDepth + 5.0);
+  
+  if (maxDepth <= minDepth) {
+    maxDepth = minDepth + 10.0;
+  }
+  
+  return { min: minDepth, max: maxDepth };
+}
+
+function setDisplayMode(mode) {
+  if (mode === 'DEPTH') {
+    const range = getDepthRange();
+    
+    if (!depthMaterial) {
+      depthMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+          cameraNear: { value: range.min },
+          cameraFar: { value: range.max }
+        },
+        vertexShader: `
+          varying float vDepth;
+          void main() {
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * mvPosition;
+            vDepth = -mvPosition.z;
+          }
+        `,
+        fragmentShader: `
+          uniform float cameraNear;
+          uniform float cameraFar;
+          varying float vDepth;
+          void main() {
+            float d = clamp((vDepth - cameraNear) / (cameraFar - cameraNear), 0.0, 1.0);
+            gl_FragColor = vec4(vec3(d), 1.0);
+          }
+        `
+      });
+    }
+    depthMaterial.uniforms.cameraNear.value = range.min;
+    depthMaterial.uniforms.cameraFar.value = range.max;
+    scene.overrideMaterial = depthMaterial;
+    
+    // Hide widgets
+    if (transformControls) {
+      _gizmoWasVisible = transformControls.visible;
+      transformControls.visible = false;
+    }
+    // Hide grid helper
+    if (gridHelper) {
+      _gridWasVisible = gridHelper.visible;
+      gridHelper.visible = false;
+    }
+  } else {
+    scene.overrideMaterial = null;
+    if (transformControls) {
+      transformControls.visible = _gizmoWasVisible;
+    }
+    if (gridHelper) {
+      gridHelper.visible = _gridWasVisible;
+    }
+  }
+}
+
+function setupImagenControls() {
+  const btnGen = document.getElementById('btn-generate-imagen');
+  const btnShow = document.getElementById('btn-show-imagen');
+  const statusDiv = document.getElementById('imagen-status');
+  const modal = document.getElementById('imagen-modal');
+  const btnClose = document.getElementById('btn-close-imagen');
+  const resultImg = document.getElementById('imagen-result-img');
+  const promptInput = document.getElementById('imagen-prompt');
+  
+  const btnPrev = document.getElementById('btn-prev-imagen');
+  const btnNext = document.getElementById('btn-next-imagen');
+  const btnSave = document.getElementById('btn-save-imagen');
+  const modalTitle = document.getElementById('imagen-modal-title');
+  
+  if (!btnGen || !modal) return;
+  
+  // Construct a compatible viewport mock for the ImagenAPI client
+  const mockViewport = {
+    container: wrapper,
+    renderer: renderer,
+    get camera() { return cameraActive; },
+    controls: controls,
+    osmGroup: null,
+    osmFeature: null,
+    get composer() { return composer; },
+    get saoPass() { return ssaoPass; },
+    setDisplayMode: (mode) => setDisplayMode(mode),
+    render: () => {
+      if (scene.overrideMaterial === depthMaterial) {
+        renderer.render(scene, cameraActive);
+      } else if (composer) {
+        composer.render();
+      } else {
+        renderer.render(scene, cameraActive);
+      }
+    },
+    onWindowResize: () => {
+      resizeCanvas();
+    }
+  };
+
+  const api = new ImagenAPI(mockViewport);
+  
+  // Modal state
+  let currentImages = [];
+  let currentIndex = 0;
+  const titles = ["Beauty Render", "Depth Stencil", "AI Render Result"];
+  
+  const updateModalImage = () => {
+    if (currentImages.length === 0) return;
+    resultImg.src = currentImages[currentIndex];
+    modalTitle.textContent = titles[currentIndex];
+  };
+
+  btnGen.addEventListener('click', async () => {
+    const prompt = promptInput.value.trim();
+    if (!prompt) {
+      alert("Please enter prompt constraints.");
+      return;
+    }
+    
+    btnGen.disabled = true;
+    statusDiv.textContent = 'Initializing...';
+    
+    const adjustModalSize = () => {
+      const content = document.getElementById('imagen-modal-content');
+      if (content) {
+        const dpr = window.devicePixelRatio || 1;
+        content.style.width = `${1365 / dpr}px`;
+        content.style.height = `${768 / dpr}px`;
+      }
+    };
+
+    window.addEventListener('resize', () => {
+      if (modal.style.display === 'flex') {
+        adjustModalSize();
+      }
+    });
+
+    try {
+      const data = await api.generateRender(prompt, (msg) => {
+        statusDiv.textContent = msg;
+      }, (beautyUrl, depthUrl) => {
+        currentImages = [beautyUrl, depthUrl];
+        currentIndex = 0; // Default to showing beauty render immediately
+        updateModalImage();
+        adjustModalSize();
+        modal.style.display = 'flex';
+        if (btnShow) btnShow.style.display = 'block';
+      });
+      
+      currentImages = [data.beauty, data.depth, data.result];
+      currentIndex = 2; // Switch to showing result when done
+      updateModalImage();
+      statusDiv.textContent = 'Success!';
+    } catch (err) {
+      // error handled in api already but update UI
+    } finally {
+      btnGen.disabled = false;
+    }
+  });
+  
+  if (btnShow) {
+    btnShow.addEventListener('click', () => {
+      if (currentImages.length > 0) {
+        const adjustModalSize = () => {
+          const content = document.getElementById('imagen-modal-content');
+          if (content) {
+            const dpr = window.devicePixelRatio || 1;
+            content.style.width = `${1365 / dpr}px`;
+            content.style.height = `${768 / dpr}px`;
+          }
+        };
+        adjustModalSize();
+        modal.style.display = 'flex';
+      }
+    });
+  }
+  
+  btnPrev.addEventListener('click', () => {
+    if (currentImages.length === 0) return;
+    currentIndex = (currentIndex - 1 + currentImages.length) % currentImages.length;
+    updateModalImage();
+  });
+
+  btnNext.addEventListener('click', () => {
+    if (currentImages.length === 0) return;
+    currentIndex = (currentIndex + 1) % currentImages.length;
+    updateModalImage();
+  });
+
+  btnSave.addEventListener('click', () => {
+    if (currentImages.length === 0) return;
+    const a = document.createElement('a');
+    a.href = currentImages[currentIndex];
+    a.download = titles[currentIndex].replace(/\s+/g, '_').toLowerCase() + '.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+  
+  btnClose.addEventListener('click', () => {
+    modal.style.display = 'none';
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (modal.style.display === 'flex') {
+      if (e.key === 'ArrowLeft' || e.key === '<' || e.key === ',') {
+        btnPrev.click();
+      } else if (e.key === 'ArrowRight' || e.key === '>' || e.key === '.') {
+        btnNext.click();
+      } else if (e.key === 'Escape') {
+        btnClose.click();
+      }
+    }
+  });
 }
 
 // Initialise App

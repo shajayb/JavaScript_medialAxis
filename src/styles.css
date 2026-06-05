@@ -171,7 +171,7 @@ canvas {
 }
 
 .control-sidebar.collapsed {
-  height: 60px;
+  height: 60px !important;
   box-shadow: var(--card-shadow);
 }
 
@@ -753,5 +753,49 @@ input:checked + .slider-switch:before {
 .tab-btn.active {
   color: var(--text-main);
   border-bottom-color: var(--accent-color);
+}
+
+/* IMAGEN UI Modal Styles */
+#btn-save-imagen {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 15px;
+  font-weight: 600;
+  font-size: 13px;
+  font-family: inherit;
+  transition: background 0.2s;
+}
+
+#btn-save-imagen:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+#btn-save-imagen:focus {
+  outline: none;
+}
+
+#btn-prev-imagen, #btn-next-imagen {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-size: 40px;
+  padding: 15px 20px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+#btn-prev-imagen:hover, #btn-next-imagen:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+#btn-prev-imagen:focus, #btn-next-imagen:focus {
+  outline: none;
 }
 
