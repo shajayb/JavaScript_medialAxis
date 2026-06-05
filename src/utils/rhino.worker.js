@@ -326,30 +326,310 @@ function getRoundedBalconyPoints(halfL, bOffset, radius, segments = 8) {
     return pts;
 }
 
-function getAerofoilPoints(lWidth, bDepth, segments = 8) {
+function getAerofoilPoints(width, depth, segments = 8) {
     const pts = [];
     
-    const p0_x = 0, p0_y = -bDepth/2;
-    const p1_x = lWidth/2, p1_y = 0;
-    const p2_x = 0, p2_y = bDepth/2;
-    for (let k = 0; k <= segments; k++) {
-        const t = k / segments;
-        const x = (1 - t) * (1 - t) * p0_x + 2 * (1 - t) * t * p1_x + t * t * p2_x;
-        const y = (1 - t) * (1 - t) * p0_y + 2 * (1 - t) * t * p1_y + t * t * p2_y;
+    // First side: from (0, -depth/2) to (0, depth/2) with control point (width/2, 0)
+    for (let i = 0; i < segments; i++) {
+        const t = i / segments;
+        const x = t * (1 - t) * width;
+        const y = (2 * t - 1) * depth / 2;
         pts.push([x, y]);
     }
     
-    const q0_x = 0, q0_y = bDepth/2;
-    const q1_x = -lWidth/2, q1_y = 0;
-    const q2_x = 0, q2_y = -bDepth/2;
-    for (let k = 1; k <= segments; k++) {
-        const t = k / segments;
-        const x = (1 - t) * (1 - t) * q0_x + 2 * (1 - t) * t * q1_x + t * t * q2_x;
-        const y = (1 - t) * (1 - t) * q0_y + 2 * (1 - t) * t * q1_y + t * t * q2_y;
+    // Second side: from (0, depth/2) to (0, -depth/2) with control point (-width/2, 0)
+    for (let i = 0; i < segments; i++) {
+        const t = i / segments;
+        const x = -t * (1 - t) * width;
+        const y = (1 - 2 * t) * depth / 2;
         pts.push([x, y]);
     }
     
     return pts;
+}
+
+function isTrueCornerVertex(idx, poly) {
+    const N = poly.length;
+    if (N < 3) return false;
+    const prev = poly[(idx - 1 + N) % N];
+    const curr = poly[idx];
+    const next = poly[(idx + 1) % N];
+    
+    const dx1 = curr[0] - prev[0];
+    const dy1 = curr[1] - prev[1];
+    const len1 = Math.hypot(dx1, dy1);
+    
+    const dx2 = next[0] - curr[0];
+    const dy2 = next[1] - curr[1];
+    const len2 = Math.hypot(dx2, dy2);
+    
+    if (len1 < 1e-6 || len2 < 1e-6) return false;
+    
+    const dot = (dx1 * dx2 + dy1 * dy2) / (len1 * len2);
+    return dot < 0.98; // Turn angle > ~11.5 degrees
+}
+
+function isCornerCell(cell, boundaryPolygon) {
+    const N = boundaryPolygon.length;
+    for (const pt of cell) {
+        for (let i = 0; i < N; i++) {
+            const bPt = boundaryPolygon[i];
+            if (Math.hypot(pt[0] - bPt[0], pt[1] - bPt[1]) < 0.1) {
+                if (isTrueCornerVertex(i, boundaryPolygon)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+function getFloorZ(floorIdx, numFloors, floorHeight, groundFloorHeightFactor) {
+    const gfHeight = floorHeight * groundFloorHeightFactor;
+    if (floorIdx === 0) {
+        return { bottom: 0, top: gfHeight, height: gfHeight };
+    } else {
+        const bottom = gfHeight + (floorIdx - 1) * floorHeight;
+        return { bottom, top: bottom + floorHeight, height: floorHeight };
+    }
+}
+
+function getBowedPolygon(floorIdx, numFloors, floorHeight, groundFloorHeightFactor, boundaryPolygon, boundaryNormals) {
+    const bowedPoly = boundaryPolygon.map(v => [v[0], v[1]]);
+    
+    const cornerIndices = [];
+    for (let i = 0; i < boundaryPolygon.length; i++) {
+        if (isTrueCornerVertex(i, boundaryPolygon)) {
+            cornerIndices.push(i);
+        }
+    }
+    
+    if (cornerIndices.length >= 2) {
+        const m = cornerIndices.length;
+        let B = 1.0;
+        if (numFloors > 1) {
+            B = 1.0 - 0.9 * (floorIdx / (numFloors - 1));
+        }
+        for (let k = 0; k < m; k++) {
+            const startIdx = cornerIndices[k];
+            const endIdx = cornerIndices[(k + 1) % m];
+            
+            const chain = [];
+            let idx = startIdx;
+            while (idx !== endIdx) {
+                chain.push(idx);
+                idx = (idx + 1) % boundaryPolygon.length;
+            }
+            chain.push(endIdx);
+            
+            const lengths = [0];
+            let totalL = 0;
+            for (let p = 0; p < chain.length - 1; p++) {
+                const p1 = boundaryPolygon[chain[p]];
+                const p2 = boundaryPolygon[chain[p+1]];
+                totalL += Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+                lengths.push(totalL);
+            }
+            
+            if (totalL > 1e-5) {
+                for (let p = 1; p < chain.length - 1; p++) {
+                    const idxVal = chain[p];
+                    const s = lengths[p] / totalL;
+                    const disp = 4 * B * s * (1 - s);
+                    
+                    const N_total = boundaryPolygon.length;
+                    const norm1 = boundaryNormals[(idxVal - 1 + N_total) % N_total];
+                    const norm2 = boundaryNormals[idxVal];
+                    
+                    const avgNormX = norm1.x + norm2.x;
+                    const avgNormY = norm1.y + norm2.y;
+                    const normLen = Math.hypot(avgNormX, avgNormY);
+                    let normX = 0, normY = 0;
+                    if (normLen > 1e-6) {
+                        normX = avgNormX / normLen;
+                        normY = avgNormY / normLen;
+                    }
+                    
+                    bowedPoly[idxVal] = [
+                        boundaryPolygon[idxVal][0] - disp * normX,
+                        boundaryPolygon[idxVal][1] - disp * normY
+                    ];
+                }
+            }
+        }
+    }
+    return bowedPoly;
+}
+
+function getWarpedVertices(vertices, boundaryPolygon, bowedPolygon) {
+    return vertices.map(v => {
+        let bestIdx = -1;
+        let minDist = 0.1;
+        for (let j = 0; j < boundaryPolygon.length; j++) {
+            const dist = Math.hypot(v[0] - boundaryPolygon[j][0], v[1] - boundaryPolygon[j][1]);
+            if (dist < minDist) {
+                minDist = dist;
+                bestIdx = j;
+            }
+        }
+        if (bestIdx !== -1) {
+            const dx = bowedPolygon[bestIdx][0] - boundaryPolygon[bestIdx][0];
+            const dy = bowedPolygon[bestIdx][1] - boundaryPolygon[bestIdx][1];
+            return [v[0] + dx, v[1] + dy];
+        }
+        return [v[0], v[1]];
+    });
+}
+
+function getWarpedCell(cell, boundaryPolygon, bowedPolygon) {
+    return cell.map(pt => {
+        let bestIdx = -1;
+        let minDist = 0.1;
+        for (let j = 0; j < boundaryPolygon.length; j++) {
+            const dist = Math.hypot(pt[0] - boundaryPolygon[j][0], pt[1] - boundaryPolygon[j][1]);
+            if (dist < minDist) {
+                minDist = dist;
+                bestIdx = j;
+            }
+        }
+        if (bestIdx !== -1) {
+            const dx = bowedPolygon[bestIdx][0] - boundaryPolygon[bestIdx][0];
+            const dy = bowedPolygon[bestIdx][1] - boundaryPolygon[bestIdx][1];
+            return [pt[0] + dx, pt[1] + dy];
+        }
+        return [pt[0], pt[1]];
+    });
+}
+
+function getCantileverDistance(normal) {
+    let theta = Math.atan2(normal[1], normal[0]);
+    if (theta < 0) theta += 2 * Math.PI;
+    
+    if (theta >= Math.PI / 2 && theta < Math.PI) {
+        const t = (theta - Math.PI / 2) / (Math.PI / 2);
+        return 2.0 * (1 - t) + 5.0 * t;
+    } else if (theta >= Math.PI && theta < 3 * Math.PI / 2) {
+        const t = (theta - Math.PI) / (Math.PI / 2);
+        return 5.0 * (1 - t) + 3.5 * t;
+    } else if (theta >= 3 * Math.PI / 2 && theta < 2 * Math.PI) {
+        return 3.5;
+    } else {
+        let t = 0;
+        if (theta < Math.PI / 2) {
+            t = theta / (Math.PI / 2);
+        } else {
+            t = (theta - 2 * Math.PI) / (Math.PI / 2);
+        }
+        return 3.5 * (1 - t) + 2.0 * t;
+    }
+}
+
+function createVaultedSlabMesh(rhino, cell, zTop, depth, vaultHeight, cellHasCorner, boundaryPolygon) {
+    const mesh = new rhino.Mesh();
+    const n = cell.length;
+    if (n < 3) return mesh;
+
+    // 1. Top Cap
+    for (let k = 0; k < n; k++) {
+        mesh.vertices().add(cell[k][0], cell[k][1], zTop);
+    }
+    const topTriangles = triangulatePolygon(cell);
+    topTriangles.forEach(tri => {
+        mesh.faces().addTriFace(tri[0], tri[1], tri[2]);
+    });
+
+    // 2. Bottom Cap (Vaulted)
+    let sx = 0, sy = 0;
+    cell.forEach(pt => { sx += pt[0]; sy += pt[1]; });
+    const cx = sx / n;
+    const cy = sy / n;
+
+    const isCornerVert = (pt) => {
+        return boundaryPolygon.some(bp => Math.hypot(pt[0] - bp[0], pt[1] - bp[1]) < 0.1);
+    };
+    const vertexFlares = cell.map(pt => isCornerVert(pt) ? 1.0 : 0.0);
+
+    const cellVertices = [];
+    const cellIndices = [];
+    let globalIdx = 0;
+    const M = 8;
+
+    for (let j = 0; j < n; j++) {
+        const p1 = cell[j];
+        const p2 = cell[(j + 1) % n];
+        const flareStart = vertexFlares[j];
+        const flareEnd = vertexFlares[(j + 1) % n];
+
+        for (let u = 0; u <= M; u++) {
+            for (let v = 0; v <= u; v++) {
+                let bx = p1[0], by = p1[1];
+                const tSeg = u > 0 ? v / u : 0.0;
+                if (u > 0) {
+                    bx = p1[0] + (p2[0] - p1[0]) * tSeg;
+                    by = p1[1] + (p2[1] - p1[1]) * tSeg;
+                }
+                const tCent = u / M;
+                const x = cx + (bx - cx) * tCent;
+                const y = cy + (by - cy) * tCent;
+
+                const vFlare = flareStart * (1 - tSeg) + flareEnd * tSeg;
+                const cellFlare = cellHasCorner ? 1.0 : 0.0;
+                const hCenter = vaultHeight * (1 - 0.8 * cellFlare);
+                const hBoundary = vaultHeight * vFlare * cellFlare;
+                const heightFactor = hCenter * (1 - tCent * tCent) + hBoundary * tCent * tCent;
+                const z = zTop - depth + heightFactor;
+
+                cellVertices.push([x, y, z]);
+            }
+        }
+
+        const getIdx = (u, v) => {
+            const rowStart = (u * (u + 1)) / 2;
+            return globalIdx + rowStart + v;
+        };
+
+        for (let u = 0; u < M; u++) {
+            for (let v = 0; v <= u; v++) {
+                const i1 = getIdx(u, v);
+                const i2 = getIdx(u + 1, v);
+                const i3 = getIdx(u + 1, v + 1);
+                cellIndices.push([i1, i2, i3]);
+                if (v < u) {
+                    const i4 = getIdx(u, v);
+                    const i5 = getIdx(u + 1, v + 1);
+                    const i6 = getIdx(u, v + 1);
+                    cellIndices.push([i4, i5, i6]);
+                }
+            }
+        }
+        globalIdx += ((M + 1) * (M + 2)) / 2;
+    }
+
+    const bottomVertOffset = mesh.vertices().count;
+    cellVertices.forEach(v => {
+        mesh.vertices().add(v[0], v[1], v[2]);
+    });
+    cellIndices.forEach(tri => {
+        mesh.faces().addTriFace(bottomVertOffset + tri[2], bottomVertOffset + tri[1], bottomVertOffset + tri[0]);
+    });
+
+    // 3. Side Walls
+    const sideVertOffset = mesh.vertices().count;
+    for (let j = 0; j < n; j++) {
+        mesh.vertices().add(cell[j][0], cell[j][1], zTop);
+        mesh.vertices().add(cell[j][0], cell[j][1], zTop - depth);
+    }
+    for (let j = 0; j < n; j++) {
+        const jNext = (j + 1) % n;
+        const t1 = sideVertOffset + 2 * j;
+        const b1 = sideVertOffset + 2 * j + 1;
+        const t2 = sideVertOffset + 2 * jNext;
+        const b2 = sideVertOffset + 2 * jNext + 1;
+        mesh.faces().addTriFace(t1, t2, b2);
+        mesh.faces().addTriFace(t1, b2, b1);
+    }
+
+    return mesh;
 }
 
 self.onmessage = async function(e) {
@@ -476,6 +756,7 @@ self.onmessage = async function(e) {
                 polygons,
                 numFloors,
                 floorHeight,
+                groundFloorHeightFactor,
                 show3DColumns,
                 show3DBeams,
                 showFloorSlabs,
@@ -792,29 +1073,153 @@ self.onmessage = async function(e) {
                     const columnsByFloor = Array.from({ length: numFloors }, () => []);
                     const beamsByFloor = Array.from({ length: numFloors }, () => []);
 
+                    // Precompute bowed polygons by floor
+                    const bowedPolygonsByFloor = [];
+                    for (let f = 0; f < numFloors; f++) {
+                        bowedPolygonsByFloor.push(getBowedPolygon(f, numFloors, floorHeight, groundFloorHeightFactor, boundary, boundaryNormals));
+                    }
+
+                    // Classify vertices for courtyard loggia and West/South exterior columns
+                    const courtyardVertexIndices = new Set();
+                    const courtyardNormals = new Map();
+                    const exteriorWestSouthVertexIndices = new Set();
+                    const exteriorWestSouthNormals = new Map();
+
+                    vertices.forEach((v, idx) => {
+                        let isCourtyard = false;
+                        const cyNorms = [];
+                        let isExterior = false;
+                        const extNorms = [];
+                        
+                        for (let j = 0; j < boundary.length; j++) {
+                            const bp1 = boundary[j];
+                            const bp2 = boundary[(j + 1) % boundary.length];
+                            const normal = boundaryNormals[j];
+                            const context = segmentContexts[j];
+                            
+                            const dist = distanceToSegmentWorker(v, bp1, bp2);
+                            if (dist < 0.1) {
+                                if (context === 'courtyard') {
+                                    isCourtyard = true;
+                                    cyNorms.push(normal);
+                                } else if (context === 'open_space' || context === 'other_building' || context === 'touching') {
+                                    isExterior = true;
+                                    extNorms.push(normal);
+                                }
+                            }
+                        }
+                        
+                        if (isCourtyard) {
+                            courtyardVertexIndices.add(idx);
+                            let sumX = 0, sumY = 0;
+                            cyNorms.forEach(n => { sumX += n.x; sumY += n.y; });
+                            const len = Math.hypot(sumX, sumY);
+                            const avgNorm = len > 1e-6 ? [sumX / len, sumY / len] : [0, 0];
+                            courtyardNormals.set(idx, avgNorm);
+                        }
+                        
+                        if (isExterior && !isCourtyard) {
+                            let sumX = 0, sumY = 0;
+                            extNorms.forEach(n => { sumX += n.x; sumY += n.y; });
+                            const len = Math.hypot(sumX, sumY);
+                            const avgNorm = len > 1e-6 ? [sumX / len, sumY / len] : [0, 0];
+                            if (avgNorm[0] < -0.5 || avgNorm[1] < -0.5) {
+                                exteriorWestSouthVertexIndices.add(idx);
+                                exteriorWestSouthNormals.set(idx, avgNorm);
+                            }
+                        }
+                    });
+
                     for (let i = 0; i < numFloors; i++) {
-                        const zFloor = i * floorHeight;
+                        const floorZ = getFloorZ(i, numFloors, floorHeight, groundFloorHeightFactor);
                         const isGroundFloor = (i === 0);
                         const isRoofFloor = (i === numFloors - 1);
+                        const floorPolygon = bowedPolygonsByFloor[i];
+
+                        const warpedVertices = getWarpedVertices(vertices, boundary, floorPolygon);
+                        const warpedEdges = edges.map(([ptU, ptV]) => {
+                            const u = warpedVertices[vertices.indexOf(ptU)];
+                            const v = warpedVertices[vertices.indexOf(ptV)];
+                            return [u, v];
+                        });
                         
                         let slabThick = slabThickness;
                         if (isGroundFloor) slabThick = slabThickness * 1.5;
-                        else if (isRoofFloor) slabThick = slabThickness * 0.8;
 
-                        if (showFloorSlabs && boundary && boundary.length >= 3) {
-                            const attr = new rhino.ObjectAttributes();
-                            attr.layerIndex = slabs3DIdx;
-                            attr.name = `Floor_Slab_P${polyIdx}_F${i}`;
-                            const slabMesh = createExtrudedPolygonMesh(rhino, boundary, slabThick, zFloor, isCCW);
-                            doc.objects().addMesh(slabMesh, attr);
-                            slabMesh.delete();
-                            attr.delete();
+                        // 1. Floor Slabs
+                        if (showFloorSlabs) {
+                            // Vaulted floor slab at the bottom of the floor
+                            if (bays && bays.length > 0) {
+                                bays.forEach((cell, cellIdx) => {
+                                    const isCorner = cellIsCorner[cellIdx] || false;
+                                    if (isCorner && i < 2) return;
+
+                                    const warpedCell = getWarpedCell(cell, boundary, floorPolygon);
+                                    const attr = new rhino.ObjectAttributes();
+                                    attr.layerIndex = slabs3DIdx;
+                                    attr.name = `Floor_Slab_P${polyIdx}_F${i}_B${cellIdx}`;
+
+                                    const cellHasCorner = cell.some(pt => {
+                                        return boundary.some(bp => Math.hypot(pt[0] - bp[0], pt[1] - bp[1]) < 0.1);
+                                    });
+                                    const depth = slabThick + beamDepth;
+                                    const vaultH = beamDepth;
+                                    const slabMesh = createVaultedSlabMesh(rhino, warpedCell, floorZ.bottom, depth, vaultH, cellHasCorner, boundary);
+                                    doc.objects().addMesh(slabMesh, attr);
+                                    slabMesh.delete();
+                                    attr.delete();
+                                });
+                            } else if (boundary && boundary.length >= 3) {
+                                // Fallback
+                                const attr = new rhino.ObjectAttributes();
+                                attr.layerIndex = slabs3DIdx;
+                                attr.name = `Floor_Slab_P${polyIdx}_F${i}`;
+                                const slabMesh = createExtrudedPolygonMesh(rhino, boundary, slabThick, floorZ.bottom, isCCW);
+                                doc.objects().addMesh(slabMesh, attr);
+                                slabMesh.delete();
+                                attr.delete();
+                            }
+
+                            // Flat cantilevered roof slab at the top of the topmost floor
+                            if (isRoofFloor) {
+                                if (floorPolygon && floorPolygon.length >= 3) {
+                                    const cantileveredPoly = [];
+                                    for (let j = 0; j < floorPolygon.length; j++) {
+                                        const V = floorPolygon[j];
+                                        const prevIdx = (j - 1 + floorPolygon.length) % floorPolygon.length;
+                                        const currIdx = j;
+                                        const n1 = boundaryNormals[prevIdx];
+                                        const n2 = boundaryNormals[currIdx];
+                                        const c1 = getCantileverDistance([n1.x, n1.y]);
+                                        const c2 = getCantileverDistance([n2.x, n2.y]);
+                                        const avgC = (c1 + c2) / 2;
+                                        
+                                        const avgNormX = n1.x + n2.x;
+                                        const avgNormY = n1.y + n2.y;
+                                        const normLen = Math.hypot(avgNormX, avgNormY);
+                                        const normX = normLen > 1e-6 ? avgNormX / normLen : 0;
+                                        const normY = normLen > 1e-6 ? avgNormY / normLen : 0;
+                                        
+                                        cantileveredPoly.push([V[0] + normX * avgC, V[1] + normY * avgC]);
+                                    }
+                                    const attr = new rhino.ObjectAttributes();
+                                    attr.layerIndex = slabs3DIdx;
+                                    attr.name = `Floor_Slab_P${polyIdx}_F${i}`;
+                                    const slabMesh = createExtrudedPolygonMesh(rhino, cantileveredPoly, slabThickness * 0.8, floorZ.top, isCCW);
+                                    doc.objects().addMesh(slabMesh, attr);
+                                    slabMesh.delete();
+                                    attr.delete();
+                                }
+                            }
                         }
 
-                        if (show3DColumns && !isRoofFloor) {
+                        // 2. Columns
+                        if (show3DColumns) {
                             const attr = new rhino.ObjectAttributes();
                             attr.layerIndex = columns3DIdx;
-                            const colH = floorHeight - slabThick;
+                            let slabThickForCol = slabThick;
+                            if (isRoofFloor) slabThickForCol = slabThickness * 0.8;
+                            const colH = floorZ.height;
 
                             let tapFactor = 1.0;
                             if (numFloors > 1) {
@@ -822,7 +1227,7 @@ self.onmessage = async function(e) {
                             }
                             const colRad = columnRadius * tapFactor;
 
-                            vertices.forEach((v, idx) => {
+                            warpedVertices.forEach((v, idx) => {
                                 let isDuplicate = false;
                                 for (const col of columnsByFloor[i]) {
                                     if (Math.hypot(v[0] - col[0], v[1] - col[1]) < 0.2) {
@@ -836,38 +1241,68 @@ self.onmessage = async function(e) {
                                 attr.name = `Column_P${polyIdx}_F${i}_${idx}`;
                                 
                                 let isCornerVertex = false;
+                                const origV = vertices[idx];
                                 for (let k = 0; k < boundary.length; k++) {
                                     const bp = boundary[k];
-                                    if (Math.hypot(v[0] - bp[0], v[1] - bp[1]) < 0.1) {
+                                    if (Math.hypot(origV[0] - bp[0], origV[1] - bp[1]) < 0.1) {
                                         isCornerVertex = true;
                                         break;
                                     }
                                 }
 
-                                if (isCornerVertex) {
-                                    const lWidth = colRad * 2.2;
-                                    const lThick = colRad * 0.8;
-                                    const lPts = [
-                                        [-lWidth/2, -lWidth/2],
-                                        [lWidth/2, -lWidth/2],
-                                        [lWidth/2, -lWidth/2 + lThick],
-                                        [-lWidth/2 + lThick, -lWidth/2 + lThick],
-                                        [-lWidth/2 + lThick, lWidth/2],
-                                        [-lWidth/2, lWidth/2]
-                                    ];
-                                    const colMesh = createExtrudedPolygonMesh(rhino, lPts, colH, zFloor + colH, true);
-                                    colMesh.translate(v[0], v[1], 0);
+                                const isCourtyard = courtyardVertexIndices.has(idx);
+                                const isFin = exteriorWestSouthVertexIndices.has(idx);
+
+                                const renderCol = (posX, posY, forceCylinder = false) => {
+                                    let colMesh;
+                                    if (isFin && !forceCylinder) {
+                                        const normal = exteriorWestSouthNormals.get(idx);
+                                        const dx = normal[0];
+                                        const dy = normal[1];
+                                        const tx = -dy;
+                                        const ty = dx;
+                                        const finPts = [
+                                            [ -1.0 * dx - 0.15 * tx, -1.0 * dy - 0.15 * ty ],
+                                            [ -1.0 * dx + 0.15 * tx, -1.0 * dy + 0.15 * ty ],
+                                            [ 1.0 * dx + 0.15 * tx, 1.0 * dy + 0.15 * ty ],
+                                            [ 1.0 * dx - 0.15 * tx, 1.0 * dy - 0.15 * ty ]
+                                        ];
+                                        colMesh = createExtrudedPolygonMesh(rhino, finPts, colH, floorZ.bottom + colH, true);
+                                        colMesh.translate([posX, posY, 0]);
+                                    } else if (isCornerVertex && !forceCylinder) {
+                                        const lWidth = colRad * 2.2;
+                                        const lThick = colRad * 0.8;
+                                        const lPts = [
+                                            [-lWidth/2, -lWidth/2],
+                                            [lWidth/2, -lWidth/2],
+                                            [lWidth/2, -lWidth/2 + lThick],
+                                            [-lWidth/2 + lThick, -lWidth/2 + lThick],
+                                            [-lWidth/2 + lThick, lWidth/2],
+                                            [-lWidth/2, lWidth/2]
+                                        ];
+                                        colMesh = createExtrudedPolygonMesh(rhino, lPts, colH, floorZ.bottom + colH, true);
+                                        colMesh.translate([posX, posY, 0]);
+                                    } else {
+                                        colMesh = createCylinderMesh(rhino, posX, posY, floorZ.bottom, colRad, colH, 12);
+                                    }
                                     doc.objects().addMesh(colMesh, attr);
                                     colMesh.delete();
+                                };
+
+                                if (isCourtyard) {
+                                    renderCol(v[0], v[1], false);
+                                    const normal = courtyardNormals.get(idx);
+                                    const dupX = v[0] - 3.0 * normal[0];
+                                    const dupY = v[1] - 3.0 * normal[1];
+                                    renderCol(dupX, dupY, true);
                                 } else {
-                                    const colMesh = createCylinderMesh(rhino, v[0], v[1], zFloor, colRad, colH, 12);
-                                    doc.objects().addMesh(colMesh, attr);
-                                    colMesh.delete();
+                                    renderCol(v[0], v[1], false);
                                 }
                             });
                             attr.delete();
                         }
 
+                        // 3. Beams
                         if (show3DBeams) {
                             const attr = new rhino.ObjectAttributes();
                             attr.layerIndex = beams3DIdx;
@@ -877,7 +1312,8 @@ self.onmessage = async function(e) {
                             }
                             const bWidth = beamWidth * tapFactor;
                             const bDepth = beamDepth * tapFactor;
-                            edges.forEach(([ptU, ptV], idx) => {
+
+                            warpedEdges.forEach(([ptU, ptV], idx) => {
                                 const midX = (ptU[0] + ptV[0]) / 2;
                                 const midY = (ptU[1] + ptV[1]) / 2;
 
@@ -891,20 +1327,35 @@ self.onmessage = async function(e) {
                                 if (isDuplicate) return;
                                 beamsByFloor[i].push([midX, midY]);
 
-                                attr.name = `Beam_P${polyIdx}_F${i}_${idx}`;
-                                const beamMesh = createBoxMesh(rhino, ptU[0], ptU[1], ptV[0], ptV[1], bWidth, bDepth, zFloor - slabThick);
-                                doc.objects().addMesh(beamMesh, attr);
-                                beamMesh.delete();
+                                const renderBeam = (pA, pB) => {
+                                    attr.name = `Beam_P${polyIdx}_F${i}_${idx}`;
+                                    const beamMesh = createBoxMesh(rhino, pA[0], pA[1], pB[0], pB[1], bWidth, bDepth, floorZ.bottom - slabThick);
+                                    doc.objects().addMesh(beamMesh, attr);
+                                    beamMesh.delete();
+                                };
+
+                                renderBeam(ptU, ptV);
+
+                                const uIdx = vertices.indexOf(edges[idx][0]);
+                                const vIdx = vertices.indexOf(edges[idx][1]);
+                                if (courtyardVertexIndices.has(uIdx) && courtyardVertexIndices.has(vIdx)) {
+                                    const normalU = courtyardNormals.get(uIdx);
+                                    const normalV = courtyardNormals.get(vIdx);
+                                    const ptUDup = [ptU[0] - 3.0 * normalU[0], ptU[1] - 3.0 * normalU[1]];
+                                    const ptVDup = [ptV[0] - 3.0 * normalV[0], ptV[1] - 3.0 * normalV[1]];
+                                    renderBeam(ptUDup, ptVDup);
+                                }
                             });
                             attr.delete();
                         }
 
-                        if (showBalconies && !isGroundFloor && !isRoofFloor && boundary && boundary.length >= 3) {
+                        // 4. Balconies (NULL on Ground & Roof, NULL if facing other buildings or touching partitions)
+                        if (showBalconies && !isGroundFloor && !isRoofFloor && floorPolygon && floorPolygon.length >= 3) {
                             const attr = new rhino.ObjectAttributes();
                             attr.layerIndex = balconies3DIdx;
-                            for (let j = 0; j < boundary.length; j++) {
-                                const p1 = boundary[j];
-                                const p2 = boundary[(j + 1) % boundary.length];
+                            for (let j = 0; j < floorPolygon.length; j++) {
+                                const p1 = floorPolygon[j];
+                                const p2 = floorPolygon[(j + 1) % floorPolygon.length];
                                 const normal = boundaryNormals[j];
                                 const context = segmentContexts[j] || 'open_space';
                                 if (context === 'other_building' || context === 'touching') continue;
@@ -922,12 +1373,12 @@ self.onmessage = async function(e) {
                                 const shapePts = getRoundedBalconyPoints(halfL, bOffset, radius, 8);
 
                                 attr.name = `Balcony_Slab_P${polyIdx}_F${i}_${j}`;
-                                const balMesh = createExtrudedPolygonMesh(rhino, shapePts, balconyThickness, zFloor, true);
+                                const balMesh = createExtrudedPolygonMesh(rhino, shapePts, balconyThickness, floorZ.bottom, true);
                                 const angle = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]);
                                 const midX = (p1[0] + p2[0]) / 2;
                                 const midY = (p1[1] + p2[1]) / 2;
                                 balMesh.rotate(angle, [0, 0, 1], [0, 0, 0]);
-                                balMesh.translate(midX, midY, 0);
+                                balMesh.translate([midX, midY, 0]);
                                 doc.objects().addMesh(balMesh, attr);
                                 balMesh.delete();
 
@@ -941,24 +1392,24 @@ self.onmessage = async function(e) {
                                     [halfL, bOffset],
                                     [-halfL, bOffset]
                                 ];
-                                const railMesh = createExtrudedPolygonMesh(rhino, railPts, railingHeight, zFloor + railingHeight, true);
+                                const railMesh = createExtrudedPolygonMesh(rhino, railPts, railingHeight, floorZ.bottom + railingHeight, true);
                                 railMesh.rotate(angle, [0, 0, 1], [0, 0, 0]);
-                                railMesh.translate(midX, midY, 0);
+                                railMesh.translate([midX, midY, 0]);
                                 doc.objects().addMesh(railMesh, attr);
                                 railMesh.delete();
                             }
                             attr.delete();
                         }
 
-                        // E. Brise-Soleil (NULL on Ground, NULL on North/East facades, NULL on Roof floor)
-                        if (showBriseSoleil && !isGroundFloor && !isRoofFloor && boundary && boundary.length >= 3) {
+                        // 5. Brise-Soleil (NULL on Ground, NULL on North/East facades, NULL on Roof floor)
+                        if (showBriseSoleil && !isGroundFloor && !isRoofFloor && floorPolygon && floorPolygon.length >= 3) {
                             const sunDir = { x: -0.707, y: -0.707 };
                             const attr = new rhino.ObjectAttributes();
                             attr.layerIndex = briseSoleil3DIdx;
                             
-                            for (let j = 0; j < boundary.length; j++) {
-                                const p1 = boundary[j];
-                                const p2 = boundary[(j + 1) % boundary.length];
+                            for (let j = 0; j < floorPolygon.length; j++) {
+                                const p1 = floorPolygon[j];
+                                const p2 = floorPolygon[(j + 1) % floorPolygon.length];
                                 const normal = boundaryNormals[j];
                                 const context = segmentContexts[j] || 'open_space';
                                 const len = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
@@ -987,7 +1438,7 @@ self.onmessage = async function(e) {
                                 if (!active) continue;
 
                                 const numLouvers = Math.max(2, Math.floor(len / bSpacing));
-                                const lHeight = floorHeight - slabThick;
+                                const lHeight = floorZ.height - slabThick;
 
                                 const foilPts = getAerofoilPoints(louverWidth, bDepth, 8);
 
@@ -997,10 +1448,10 @@ self.onmessage = async function(e) {
                                     const ly = p1[1] + (p2[1] - p1[1]) * t + normal.y * 0.15;
                                     
                                     attr.name = `Louver_P${polyIdx}_F${i}_S${j}_L${k}`;
-                                    const louverMesh = createExtrudedPolygonMesh(rhino, foilPts, lHeight, zFloor + lHeight, true);
+                                    const louverMesh = createExtrudedPolygonMesh(rhino, foilPts, lHeight, floorZ.bottom + lHeight, true);
                                     const angle = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]);
                                     louverMesh.rotate(angle, [0, 0, 1], [0, 0, 0]);
-                                    louverMesh.translate(lx, ly, 0);
+                                    louverMesh.translate([lx, ly, 0]);
                                     doc.objects().addMesh(louverMesh, attr);
                                     louverMesh.delete();
                                 }
@@ -1009,20 +1460,7 @@ self.onmessage = async function(e) {
                         }
                     }
 
-                    // F. Vaulted Roofs (Roof top floor only, Standard vs Butterfly)
-                    if (showVaultedRoofs && bays && bays.length > 0) {
-                        const attr = new rhino.ObjectAttributes();
-                        attr.layerIndex = vaults3DIdx;
-                        const zTop = (numFloors - 1) * floorHeight;
-                        bays.forEach((cell, cellIdx) => {
-                            const isCorner = cellIsCorner[cellIdx] || false;
-                            attr.name = `Vaulted_Roof_P${polyIdx}_${cellIdx}`;
-                            const vaultMesh = createVaultMesh(rhino, cell, vaultHeight, zTop, 8, isCorner, boundary);
-                            doc.objects().addMesh(vaultMesh, attr);
-                            vaultMesh.delete();
-                        });
-                        attr.delete();
-                    }
+
 
                     // G. 3D Cells (colored by classification)
                     if (show3DCells && bays && bays.length > 0) {
@@ -1072,9 +1510,12 @@ self.onmessage = async function(e) {
                             attr.layerIndex = cellLayerIdx;
 
                             for (let f = 0; f < numFloors; f++) {
+                                const floorZ = getFloorZ(f, numFloors, floorHeight, groundFloorHeightFactor);
+                                const floorPolygon = bowedPolygonsByFloor[f];
+                                const warpedCell = getWarpedCell(cell, boundary, floorPolygon);
+                                
                                 attr.name = `Cell_P${polyIdx}_F${f}_B${cellIdx}`;
-                                const cellZ = f * floorHeight;
-                                const cellMesh = createExtrudedPolygonMesh(rhino, cell.map(pt => [pt[0], pt[1]]), floorHeight, cellZ + floorHeight, true);
+                                const cellMesh = createExtrudedPolygonMesh(rhino, warpedCell, floorZ.height, floorZ.top, true);
                                 doc.objects().addMesh(cellMesh, attr);
                                 cellMesh.delete();
                             }

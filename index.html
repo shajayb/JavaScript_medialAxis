@@ -53,7 +53,12 @@
         </div>
       </div>
 
-      <div class="sidebar-scroll">
+      <div class="sidebar-tabs">
+        <button class="tab-btn active" id="btn-tab-workflow">Workflow</button>
+        <button class="tab-btn" id="btn-tab-shading">SSAO & Shading</button>
+      </div>
+
+      <div class="sidebar-scroll" id="tab-content-workflow">
         <!-- Presets Selection -->
         <section class="control-group">
           <h3>Shape Presets</h3>
@@ -262,6 +267,15 @@
               <input type="range" id="slider-floor-height" min="2.5" max="5.0" step="0.1" value="4.0">
             </div>
 
+            <!-- Ground Floor Height Factor (X) Slider -->
+            <div class="slider-container" style="margin-top: 10px; margin-bottom: 10px;">
+              <div class="slider-info">
+                <span class="slider-label">Ground Floor Height Factor (X)</span>
+                <span class="slider-value" id="val-ground-floor-factor">2.0</span>
+              </div>
+              <input type="range" id="slider-ground-floor-factor" min="1.0" max="4.0" step="0.1" value="2.0">
+            </div>
+
             <!-- Toggle: Show 3D Columns -->
             <div class="toggle-container" style="margin-top: 10px;">
               <div class="toggle-details">
@@ -439,6 +453,123 @@
             <p style="margin-top: 4px; font-size: 0.8rem;">Click and drag vertices to modify shapes in real-time. Hover over the medial axis to see the maximal inscribed circle sweep.</p>
           </div>
         </div>
+      </div>
+
+      <!-- SSAO & Shading Tab Content -->
+      <div class="sidebar-scroll" id="tab-content-shading" style="display: none;">
+        <!-- SSAO Settings -->
+        <section class="control-group">
+          <h3>Ambient Occlusion (SSAO)</h3>
+          
+          <!-- SSAO Enable/Disable -->
+          <div class="toggle-container" style="margin-top: 10px;">
+            <div class="toggle-details">
+              <span class="toggle-label">Enable SSAO</span>
+              <span class="toggle-sub">Soft contact shadows in corners</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chk-ssao-enabled" checked>
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+
+          <!-- SSAO Kernel Radius -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">SSAO Radius</span>
+              <span class="slider-value" id="val-ssao-radius">2.0</span>
+            </div>
+            <input type="range" id="slider-ssao-radius" min="0.1" max="10.0" step="0.1" value="2.0">
+          </div>
+
+          <!-- SSAO Min Distance -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">SSAO Min Dist</span>
+              <span class="slider-value" id="val-ssao-min-dist">0.10</span>
+            </div>
+            <input type="range" id="slider-ssao-min-dist" min="0.01" max="1.0" step="0.01" value="0.1">
+          </div>
+
+          <!-- SSAO Max Distance -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">SSAO Max Dist</span>
+              <span class="slider-value" id="val-ssao-max-dist">8.0</span>
+            </div>
+            <input type="range" id="slider-ssao-max-dist" min="1.0" max="50.0" step="1.0" value="8.0">
+          </div>
+
+          <!-- SSAO Intensity / Contrast -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">SSAO Intensity</span>
+              <span class="slider-value" id="val-ssao-intensity">2.0</span>
+            </div>
+            <input type="range" id="slider-ssao-intensity" min="1.0" max="5.0" step="0.1" value="2.0">
+          </div>
+        </section>
+
+        <!-- Lighting Intensities -->
+        <section class="control-group">
+          <h3>Lighting Control</h3>
+
+          <!-- Ambient Light Intensity -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Ambient Intensity</span>
+              <span class="slider-value" id="val-ambient-intensity">0.75</span>
+            </div>
+            <input type="range" id="slider-ambient-intensity" min="0.0" max="2.0" step="0.05" value="0.75">
+          </div>
+
+          <!-- Directional Light 1 Intensity -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Dir Light 1 (Key)</span>
+              <span class="slider-value" id="val-dir1-intensity">0.40</span>
+            </div>
+            <input type="range" id="slider-dir1-intensity" min="0.0" max="2.0" step="0.05" value="0.4">
+          </div>
+
+          <!-- Directional Light 2 Intensity -->
+          <div class="slider-container" style="margin-top: 10px;">
+            <div class="slider-info">
+              <span class="slider-label">Dir Light 2 (Fill)</span>
+              <span class="slider-value" id="val-dir2-intensity">0.20</span>
+            </div>
+            <input type="range" id="slider-dir2-intensity" min="0.0" max="2.0" step="0.05" value="0.2">
+          </div>
+        </section>
+
+        <!-- Environment Options -->
+        <section class="control-group">
+          <h3>Environment & Grid</h3>
+
+          <!-- Show Ground Plane -->
+          <div class="toggle-container" style="margin-top: 10px;">
+            <div class="toggle-details">
+              <span class="toggle-label">Show Ground Plane</span>
+              <span class="toggle-sub">Renders white plane for AO shadows</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chk-ground-plane" checked>
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+
+          <!-- Show Grid Helper -->
+          <div class="toggle-container" style="margin-top: 10px;">
+            <div class="toggle-details">
+              <span class="toggle-label">Show Grid Helper</span>
+              <span class="toggle-sub">Draws spacing grid lines</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chk-grid-helper" checked>
+              <span class="slider-switch"></span>
+            </label>
+          </div>
+        </section>
       </div>
     </aside>
   </div>

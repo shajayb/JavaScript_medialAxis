@@ -371,6 +371,7 @@ export class RhinoManager {
                 polygons: polygonsToExport,
                 numFloors: this.appContext.state.numFloors,
                 floorHeight: this.appContext.state.floorHeight,
+                groundFloorHeightFactor: this.appContext.state.groundFloorHeightFactor,
                 show3DColumns: this.appContext.state.show3DColumns,
                 show3DBeams: this.appContext.state.show3DBeams,
                 showFloorSlabs: this.appContext.state.showFloorSlabs,
