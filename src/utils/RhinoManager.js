@@ -434,14 +434,41 @@ function classifyBoundarySegment(p1, p2, normal, item, allPolygons) {
   return 'open_space';
 }
 
-// Determines if a cell is a corner cell (touches any original boundary polygon vertices)
+// Determines if a vertex is a true corner vertex of the boundary polygon (significant angle shift)
+function isTrueCornerVertex(idx, poly) {
+  const N = poly.length;
+  if (N < 3) return false;
+  const prev = poly[(idx - 1 + N) % N];
+  const curr = poly[idx];
+  const next = poly[(idx + 1) % N];
+  
+  const dx1 = curr.x - prev.x;
+  const dy1 = curr.y - prev.y;
+  const len1 = Math.hypot(dx1, dy1);
+  
+  const dx2 = next.x - curr.x;
+  const dy2 = next.y - curr.y;
+  const len2 = Math.hypot(dx2, dy2);
+  
+  if (len1 < 1e-6 || len2 < 1e-6) return false;
+  
+  const dot = (dx1 * dx2 + dy1 * dy2) / (len1 * len2);
+  return dot < 0.98; // Turn angle > ~11.5 degrees
+}
+
+// Determines if a cell is a corner cell (touches any true corner vertices of the boundary polygon)
 function isCornerCell(cell, boundaryPolygon) {
+  const N = boundaryPolygon.length;
   for (const pt of cell) {
-    for (const bPt of boundaryPolygon) {
+    for (let i = 0; i < N; i++) {
+      const bPt = boundaryPolygon[i];
       if (Math.hypot(pt.x - bPt.x, pt.y - bPt.y) < 0.1) {
-        return true;
+        if (isTrueCornerVertex(i, boundaryPolygon)) {
+          return true;
+        }
       }
     }
   }
   return false;
 }
+

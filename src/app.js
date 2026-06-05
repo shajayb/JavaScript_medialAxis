@@ -1724,17 +1724,58 @@ function classifyBoundarySegment(p1, p2, normal, item, allPolygons) {
   return 'open_space';
 }
 
-// Determines if a cell is a corner cell (touches any original boundary polygon vertices)
+// Determines if a vertex is a true corner vertex of the boundary polygon (significant angle shift)
+function isTrueCornerVertex(idx, poly) {
+  const N = poly.length;
+  if (N < 3) return false;
+  const prev = poly[(idx - 1 + N) % N];
+  const curr = poly[idx];
+  const next = poly[(idx + 1) % N];
+  
+  const dx1 = curr.x - prev.x;
+  const dy1 = curr.y - prev.y;
+  const len1 = Math.hypot(dx1, dy1);
+  
+  const dx2 = next.x - curr.x;
+  const dy2 = next.y - curr.y;
+  const len2 = Math.hypot(dx2, dy2);
+  
+  if (len1 < 1e-6 || len2 < 1e-6) return false;
+  
+  const dot = (dx1 * dx2 + dy1 * dy2) / (len1 * len2);
+  return dot < 0.98; // Turn angle > ~11.5 degrees
+}
+
+// Determines if a cell is a corner cell (touches any true corner vertices of the boundary polygon)
 function isCornerCell(cell, boundaryPolygon) {
+  const N = boundaryPolygon.length;
   for (const pt of cell) {
-    for (const bPt of boundaryPolygon) {
+    for (let i = 0; i < N; i++) {
+      const bPt = boundaryPolygon[i];
       if (Math.hypot(pt.x - bPt.x, pt.y - bPt.y) < 0.1) {
-        return true;
+        if (isTrueCornerVertex(i, boundaryPolygon)) {
+          return true;
+        }
       }
     }
   }
   return false;
 }
+
+function distanceToSegment(pt, p1, p2) {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-9) {
+    return Math.hypot(pt.x - p1.x, pt.y - p1.y);
+  }
+  let t = ((pt.x - p1.x) * dx + (pt.y - p1.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const projX = p1.x + t * dx;
+  const projY = p1.y + t * dy;
+  return Math.hypot(pt.x - projX, pt.y - projY);
+}
+
 
 function build3DStack() {
   if (!stack3DGroup) return;
@@ -1908,17 +1949,13 @@ function build3DStack() {
           for (let k = 0; k < cell.length; k++) {
             const pt1 = cell[k];
             const pt2 = cell[(k + 1) % cell.length];
+            const mid = { x: (pt1.x + pt2.x) / 2, y: (pt1.y + pt2.y) / 2 };
 
             for (let j = 0; j < state.polygon.length; j++) {
               const bp1 = state.polygon[j];
               const bp2 = state.polygon[(j + 1) % state.polygon.length];
 
-              const d11 = Math.hypot(pt1.x - bp1.x, pt1.y - bp1.y);
-              const d22 = Math.hypot(pt2.x - bp2.x, pt2.y - bp2.y);
-              const d12 = Math.hypot(pt1.x - bp2.x, pt1.y - bp2.y);
-              const d21 = Math.hypot(pt2.x - bp1.x, pt2.y - bp1.y);
-
-              if ((d11 < 0.1 && d22 < 0.1) || (d12 < 0.1 && d21 < 0.1)) {
+              if (distanceToSegment(mid, bp1, bp2) < 0.1) {
                 const context = segmentContexts[j];
                 if (context === 'courtyard') hasCourtyard = true;
                 else if (context === 'other_building') hasNeighbor = true;

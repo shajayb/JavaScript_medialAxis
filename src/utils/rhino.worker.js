@@ -182,6 +182,20 @@ function triangulatePolygon(vertices) {
     return triangles;
 }
 
+function distanceToSegmentWorker(pt, p1, p2) {
+    const dx = p2[0] - p1[0];
+    const dy = p2[1] - p1[1];
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-9) {
+        return Math.hypot(pt[0] - p1[0], pt[1] - p1[1]);
+    }
+    let t = ((pt[0] - p1[0]) * dx + (pt[1] - p1[1]) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const projX = p1[0] + t * dx;
+    const projY = p1[1] + t * dy;
+    return Math.hypot(pt[0] - projX, pt[1] - projY);
+}
+
 function createExtrudedPolygonMesh(rhino, vertices2D, depth, zTop, isCCW = true) {
     const mesh = new rhino.Mesh();
     const n = vertices2D.length;
@@ -1025,20 +1039,16 @@ self.onmessage = async function(e) {
                                 let hasNeighbor = false;
                                 let hasOpenSpace = false;
 
-                                for (let k = 0; k < cell.length; k++) {
+                                 for (let k = 0; k < cell.length; k++) {
                                     const pt1 = cell[k];
                                     const pt2 = cell[(k + 1) % cell.length];
+                                    const mid = [(pt1[0] + pt2[0]) / 2, (pt1[1] + pt2[1]) / 2];
 
                                     for (let j = 0; j < boundary.length; j++) {
                                         const bp1 = boundary[j];
                                         const bp2 = boundary[(j + 1) % boundary.length];
 
-                                        const d11 = Math.hypot(pt1[0] - bp1[0], pt1[1] - bp1[1]);
-                                        const d22 = Math.hypot(pt2[0] - bp2[0], pt2[1] - bp2[1]);
-                                        const d12 = Math.hypot(pt1[0] - bp2[0], pt1[1] - bp2[1]);
-                                        const d21 = Math.hypot(pt2[0] - bp1[0], pt2[1] - bp1[1]);
-
-                                        if ((d11 < 0.1 && d22 < 0.1) || (d12 < 0.1 && d21 < 0.1)) {
+                                        if (distanceToSegmentWorker(mid, bp1, bp2) < 0.1) {
                                             const context = segmentContexts[j];
                                             if (context === 'courtyard') hasCourtyard = true;
                                             else if (context === 'other_building') hasNeighbor = true;
